@@ -11,7 +11,6 @@ Modules:
   distances   weighted resampling and neuron-to-neuron Wasserstein distances
   clustering  hierarchical clustering, stability, noise floor, label/confound checks
   plotting    figures for the clustering stage
-  synthetic   synthetic clouds with known shapes for end-to-end checks
 
 Command-line entry points live in ../scripts/.
 """

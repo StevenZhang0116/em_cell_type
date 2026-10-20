@@ -35,16 +35,15 @@ celltype/    library code (no command-line parsing)
   distances.py   resampling, W2 between point clouds and between GMM mixtures
   clustering.py  clustering, stability, noise floor, label and confound checks
   plotting.py    Stage-C figures
-  synthetic.py   clouds with three known shapes for testing
 scripts/     command-line entry points for each stage
-tests/       pytest unit tests and a synthetic end-to-end recovery test
+tests/       pytest unit tests
 jobs/        Slurm scripts (account amath, partition cpu-g2)
 ```
 
 ## Running (on klone, through Slurm only)
 
 ```bash
-sbatch jobs/synthetic_test.slurm          # unit tests + synthetic end-to-end check
+sbatch jobs/unit_tests.slurm              # pytest unit tests
 bash jobs/submit_all.sh microns           # Stage A, then B + C for all 8 combinations (xyz)
 bash jobs/submit_all.sh microns cylindrical
 ```
@@ -62,4 +61,3 @@ sbatch --export=ALL,DATASET=microns,SIDE=axon,METHOD=points,DEPTH=relative jobs/
 Features use every synapse of a neuron. That is fine for exploration, but when
 the new labels are later used to predict held-out connections, the clouds must
 be rebuilt inside each cross-validation fold from training-side synapses only.
-# em_cell_type

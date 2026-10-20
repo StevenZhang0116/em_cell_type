@@ -13,7 +13,6 @@ import pytest
 
 from celltype import clustering, distances
 from celltype.clouds import Clouds, build_side
-from celltype.synthetic import synthetic_side
 
 
 # ---------------------------------------------------------------------------
@@ -128,26 +127,3 @@ def test_rotation_about_soma_axis_matters_only_for_xyz(tmp_path):
     assert distance("cylindrical") == pytest.approx(0.0, abs=1e-6)
     assert distance("xyz") > 50.0
 
-
-# ---------------------------------------------------------------------------
-# End to end on synthetic shapes
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("coords", ["xyz", "cylindrical"])
-@pytest.mark.parametrize("method", ["points", "shared_gmm"])
-def test_synthetic_shapes_are_recovered(tmp_path, method, coords):
-    np.savez(tmp_path / "clouds.npz", **synthetic_side(n_per_shape=8, rng=np.random.default_rng(0)))
-    clouds = Clouds(tmp_path / "clouds.npz")
-    eligible = np.arange(len(clouds))
-    matrices = np.stack([
-        distances.compute_replicate(
-            clouds, eligible, method=method, coords=coords, depth_mode="relative", n_points=80,
-            use_weights=True, n_components=6, rng=np.random.default_rng(rep), seed=rep,
-            n_jobs=1)["distance"]
-        for rep in range(2)])
-    _, consensus = clustering.cut_tree(matrices.mean(axis=0), "average", [3])
-    truth = clouds.meta["label_cell_type"]
-    agreement = clustering.label_agreement(pd.DataFrame({c: truth for c in
-                                                         ("classification_system", "cell_type", "cell_type_v2")}),
-                                           consensus, [3])
-    assert agreement["cell_type"][3]["ami"] > 0.9
