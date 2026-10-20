@@ -5,9 +5,11 @@ Input tables are the ones used by the Stage-1 GMM fit in
 ``../mixture/src/modeling/mixture_all.py``. Stage outputs live under
 ``output/<dataset>/``:
 
-  clouds_<side>.npz                               (scripts/01_extract_clouds.py)
-  dist_<side>_<method>_<coords>_<depth>/rep<b>.npz   (scripts/02_compute_distances.py)
-  cluster_<side>_<method>_<coords>_<depth>/...       (scripts/03_cluster_neurons.py)
+  clouds_<side>.npz                               (Stage A)
+  dist_<side>_<coords>[_n<K>]/rep<b>.npz           (Stage B)
+  cluster_<side>_<coords>[_n<K>]/...               (Stage C)
+
+The ``_n<K>`` suffix marks a quick-test run on K randomly chosen neurons.
 """
 
 from __future__ import annotations
@@ -25,8 +27,6 @@ NM_TO_UM = 1.0 / 1000.0
 SIDES = ("axon", "dendrite")
 # xyz: soma-centred (dx, dy, dz); cylindrical: (r, dy), invariant to rotation about the soma axis.
 COORDS = ("xyz", "cylindrical")
-DEPTH_MODES = ("relative", "absolute")
-METHODS = ("points", "shared_gmm")
 
 DATASETS = {
     "microns": {
@@ -53,8 +53,9 @@ def allocated_cpus():
     return int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
 
 
-def run_name(side, method, coords, depth_mode):
-    return f"{side}_{method}_{coords}_{depth_mode}"
+def run_name(side, coords, n_neurons=None):
+    name = f"{side}_{coords}"
+    return name if n_neurons is None else f"{name}_n{n_neurons}"
 
 
 def _ensure(path):
@@ -70,9 +71,9 @@ def clouds_path(dataset, side):
     return dataset_dir(dataset) / f"clouds_{side}.npz"
 
 
-def distance_dir(dataset, side, method, coords, depth_mode):
-    return _ensure(dataset_dir(dataset) / f"dist_{run_name(side, method, coords, depth_mode)}")
+def distance_dir(dataset, side, coords, n_neurons=None):
+    return _ensure(dataset_dir(dataset) / f"dist_{run_name(side, coords, n_neurons)}")
 
 
-def cluster_dir(dataset, side, method, coords, depth_mode):
-    return _ensure(dataset_dir(dataset) / f"cluster_{run_name(side, method, coords, depth_mode)}")
+def cluster_dir(dataset, side, coords, n_neurons=None):
+    return _ensure(dataset_dir(dataset) / f"cluster_{run_name(side, coords, n_neurons)}")

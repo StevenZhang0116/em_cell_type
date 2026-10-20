@@ -11,20 +11,24 @@ Inputs are the cell and synapse tables used by the Stage-1 GMM fit in
 
 ## Pipeline
 
-| Stage | Script | What it does | Output (`output/<dataset>/`) |
+| Stage | Function (`celltype/pipeline.py`) | What it does | Output (`output/<dataset>/`) |
 |---|---|---|---|
-| A | `scripts/01_extract_clouds.py` | All synapses of each proofread neuron, regardless of partner type, as soma-centred offsets `(dx, dy, dz)` with border-compensation weights; lateral cutoff 250 um | `clouds_{axon,dendrite}.npz` |
-| B | `scripts/02_compute_distances.py` | One bootstrap replicate: weighted resampling of each neuron, then pairwise 2-Wasserstein distances (`points`: exact OT on the points; `shared_gmm`: mixture-Wasserstein on a shared GMM basis) plus each neuron's self-distance (noise floor) | `dist_<side>_<method>_<coords>_<depth>/rep<b>.npz` |
-| C | `scripts/03_cluster_neurons.py` | Average-linkage clustering of the mean distance matrix, bootstrap stability per k, AMI/ARI with dataset labels, confound checks (soma depth, synapse count, border weight, distance to border) | `cluster_<side>_<method>_<coords>_<depth>/` |
+| A | `extract_clouds` | All synapses of each proofread neuron, regardless of partner type, as soma-centred offsets `(dx, dy, dz)` with border-compensation weights; lateral cutoff 250 um | `clouds_{axon,dendrite}.npz` |
+| B | `compute_distances` | Each bootstrap replicate: weighted resampling of each neuron, then pairwise 2-Wasserstein distances (exact optimal transport on the soma-relative points) plus each neuron's self-distance (noise floor) | `dist_<side>_<coords>/rep<b>.npz` |
+| C | `cluster_neurons` | Average-linkage clustering of the mean distance matrix, bootstrap stability per k, AMI/ARI with dataset labels, confound checks (soma depth, synapse count, border weight, distance to border) | `cluster_<side>_<coords>/` |
 
-Options for Stages B and C:
+All three stages run from one script, `scripts/run_pipeline.py`. Options:
 
 - `--coords xyz` (default) compares the 3-D soma-centred offsets `(dx, dy, dz)`, so the
   in-plane direction of an arbor counts. `--coords cylindrical` uses `(r, dy)` with
   `r = hypot(dx, dz)`, which ignores rotation about the soma's vertical axis (same
   assumption as the cylindrical GMM in `../mixture`).
-- `--depth-mode relative` (default) compares arbor shape only; `--depth-mode absolute`
-  adds the soma depth back, so cells in different layers stay apart.
+- `--sides` and `--coords` take several values and the script loops over every
+  combination (default: both sides, `xyz`).
+- `--n-neurons K` uses only K randomly chosen neurons per side (same K neurons in every
+  replicate), for a quick test; its outputs go to separate `*_n<K>` directories.
+- `--stages extract distances cluster` selects stages; finished outputs are skipped
+  unless `--overwrite`, so an interrupted job can just be resubmitted.
 
 ## Layout
 
@@ -32,10 +36,11 @@ Options for Stages B and C:
 celltype/    library code (no command-line parsing)
   config.py      paths, dataset tables, output layout, Slurm-aware CPU count
   clouds.py      extraction and CSR reader for per-neuron synapse clouds
-  distances.py   resampling, W2 between point clouds and between GMM mixtures
+  distances.py   resampling and exact W2 between point clouds
   clustering.py  clustering, stability, noise floor, label and confound checks
   plotting.py    Stage-C figures
-scripts/     command-line entry points for each stage
+  pipeline.py    the three stages
+scripts/     run_pipeline.py, the single command-line entry point
 tests/       pytest unit tests
 jobs/        Slurm scripts (account amath, partition cpu-g2)
 ```
@@ -43,18 +48,14 @@ jobs/        Slurm scripts (account amath, partition cpu-g2)
 ## Running (on klone, through Slurm only)
 
 ```bash
-sbatch jobs/unit_tests.slurm              # pytest unit tests
-bash jobs/submit_all.sh microns           # Stage A, then B + C for all 8 combinations (xyz)
-bash jobs/submit_all.sh microns cylindrical
+sbatch jobs/unit_tests.slurm                               # pytest unit tests
+sbatch jobs/pipeline.slurm --dataset microns               # everything: axon + dendrite, xyz
+sbatch jobs/pipeline.slurm --coords xyz cylindrical        # also the cylindrical runs
+sbatch jobs/pipeline.slurm --sides axon                   # one side only
+sbatch jobs/pipeline.slurm --n-neurons 50 --n-reps 2      # quick test on 50 neurons per side
 ```
 
-Single combination:
-
-```bash
-sbatch --export=ALL,DATASET=microns jobs/extract.slurm
-sbatch --export=ALL,DATASET=microns,SIDE=axon,METHOD=points,DEPTH=relative jobs/distances.slurm
-sbatch --export=ALL,DATASET=microns,SIDE=axon,METHOD=points,DEPTH=relative jobs/cluster.slurm
-```
+The job log is `log/pipeline_<jobid>.txt`.
 
 ## Caveat
 

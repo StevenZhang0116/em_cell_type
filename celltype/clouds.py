@@ -160,20 +160,14 @@ class Clouds:
     def _span(self, index):
         return slice(self.offsets[index], self.offsets[index + 1])
 
-    def neuron_points(self, index, coords, depth_mode):
-        """Synapse positions of one neuron in micrometres.
+    def neuron_points(self, index, coords):
+        """Soma-relative synapse positions of one neuron in micrometres.
 
-        ``coords="xyz"`` gives (n, 3) ``(dx, depth, dz)``; ``"cylindrical"``
-        gives (n, 2) ``(r, depth)``. ``relative`` depth is the offset from the
-        soma; ``absolute`` depth adds the soma depth back, so cells in
-        different layers stay distinguishable.
+        ``coords="xyz"`` gives (n, 3) ``(dx, dy, dz)``; ``"cylindrical"``
+        gives (n, 2) ``(r, dy)``, where dy is the depth offset from the soma.
         """
         span = self._span(index)
         depth = self.meta["dy"][span]
-        if depth_mode == "absolute":
-            depth = depth + self.meta["soma_y"][index]
-        elif depth_mode != "relative":
-            raise ValueError(f"unknown depth_mode {depth_mode!r}")
         dx, dz = self.meta["dx"][span], self.meta["dz"][span]
         if coords == "xyz":
             return np.column_stack([dx, depth, dz])

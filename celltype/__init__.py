@@ -11,6 +11,7 @@ Modules:
   distances   weighted resampling and neuron-to-neuron Wasserstein distances
   clustering  hierarchical clustering, stability, noise floor, label/confound checks
   plotting    figures for the clustering stage
+  pipeline    the three stages (extract, distances, cluster)
 
-Command-line entry points live in ../scripts/.
+Stages are in pipeline.py; the command-line entry point is ../scripts/run_pipeline.py.
 """

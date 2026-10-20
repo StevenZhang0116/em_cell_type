@@ -36,19 +36,6 @@ def test_w2_points_is_permutation_invariant():
     assert distances.w2_points(x, y) == pytest.approx(distances.w2_points(x[::-1], y))
 
 
-def test_gaussian_w2_matches_closed_form_for_isotropic():
-    # W2^2 between N(m1, s1^2 I) and N(m2, s2^2 I) in 2-D: |m1-m2|^2 + 2 (s1-s2)^2
-    value = distances.gaussian_w2_sq(np.zeros(2), 4.0 * np.eye(2), np.array([3.0, 0.0]), np.eye(2))
-    assert value == pytest.approx(9.0 + 2.0)
-
-
-def test_w2_mixture_identical_weights_is_zero():
-    cost = np.array([[0.0, 4.0], [4.0, 0.0]])
-    pi = np.array([0.3, 0.7])
-    assert distances.w2_mixture(pi, pi, cost) == pytest.approx(0.0)
-    assert distances.w2_mixture(np.array([1.0, 0.0]), np.array([0.0, 1.0]), cost) == pytest.approx(2.0)
-
-
 @pytest.mark.parametrize("n, n_blocks", [(1, 4), (7, 3), (100, 16)])
 def test_balanced_row_blocks_cover_every_row_once(n, n_blocks):
     blocks = distances.balanced_row_blocks(n, n_blocks)
@@ -98,15 +85,15 @@ def test_build_side_csr_follows_cell_order_and_cutoff(tmp_path):
     clouds = Clouds(tmp_path / "clouds.npz")
 
     # Cell 20 (soma at 0, 50, 0): offsets (3, -10, 4) and (0, 0, 0).
-    first = clouds.neuron_points(0, "xyz", "relative")
+    first = clouds.neuron_points(0, "xyz")
     assert sorted(map(tuple, first.round(6).tolist())) == [(0.0, 0.0, 0.0), (3.0, -10.0, 4.0)]
-    cylindrical = clouds.neuron_points(0, "cylindrical", "relative")
+    cylindrical = clouds.neuron_points(0, "cylindrical")
     assert sorted(map(tuple, cylindrical.round(6).tolist())) == [(0.0, 0.0), (5.0, -10.0)]
     assert sorted(clouds.neuron_weights(0).tolist()) == [1.0, 2.0]
 
-    # Cell 10 (soma depth 300): absolute depth adds the soma depth back.
-    second = clouds.neuron_points(1, "xyz", "absolute")
-    assert sorted(second[:, 1].tolist()) == [290.0, 310.0]
+    # Cell 10 (soma depth 300): depth is relative to the soma.
+    second = clouds.neuron_points(1, "xyz")
+    assert sorted(second[:, 1].tolist()) == [-10.0, 10.0]
 
 
 def test_rotation_about_soma_axis_matters_only_for_xyz(tmp_path):
@@ -121,9 +108,63 @@ def test_rotation_about_soma_axis_matters_only_for_xyz(tmp_path):
     clouds = Clouds(tmp_path / "clouds.npz")
 
     def distance(coords):
-        return distances.w2_points(clouds.neuron_points(0, coords, "relative"),
-                                   clouds.neuron_points(1, coords, "relative"))
+        return distances.w2_points(clouds.neuron_points(0, coords),
+                                   clouds.neuron_points(1, coords))
 
     assert distance("cylindrical") == pytest.approx(0.0, abs=1e-6)
     assert distance("xyz") > 50.0
 
+
+
+# ---------------------------------------------------------------------------
+# Pipeline
+# ---------------------------------------------------------------------------
+
+def _toy_clouds(tmp_path, monkeypatch):
+    """Three groups of three neurons with distinct arbors, saved as dataset "toy"."""
+    from celltype import config
+
+    monkeypatch.setattr(config, "OUTPUT_ROOT", tmp_path)
+    rng = np.random.default_rng(6)
+    n, centres = 150, [(0.0, -100.0), (100.0, 0.0), (0.0, 100.0)]
+    dx, dy, dz = [], [], []
+    for cx, cy in np.repeat(centres, 3, axis=0):
+        dx.append(rng.normal(cx, 15, n))
+        dy.append(rng.normal(cy, 15, n))
+        dz.append(rng.normal(0, 15, n))
+    groups = np.repeat(["a", "b", "c"], 3)
+    np.savez(config.clouds_path("toy", "axon"), cell_ids=np.arange(9), offsets=np.arange(10) * n,
+             dx=np.concatenate(dx), dy=np.concatenate(dy), dz=np.concatenate(dz),
+             weight=np.ones(9 * n), soma_y=rng.uniform(0, 500, 9),
+             **{f"label_{column}": groups for column in config.LABEL_COLUMNS})
+    return Clouds(config.clouds_path("toy", "axon"))
+
+
+def test_pipeline_stages_b_and_c_end_to_end(tmp_path, monkeypatch):
+    """Stage C recovers the three toy groups at k = 3."""
+    from sklearn.metrics import adjusted_rand_score
+
+    from celltype import config, pipeline
+
+    clouds = _toy_clouds(tmp_path, monkeypatch)
+    for rep in range(2):
+        pipeline.compute_distances(clouds, "toy", "axon", "xyz", rep, n_points=40,
+                                   min_synapses=100, use_weights=True, seed=0)
+    pipeline.cluster_neurons("toy", "axon", "xyz", linkage="average", k_values=[2, 3, 4], k=3)
+
+    table = pd.read_csv(config.cluster_dir("toy", "axon", "xyz") / "neurons.csv")
+    assert adjusted_rand_score(table["cell_type"], table["cluster_k3"]) == pytest.approx(1.0)
+
+
+def test_pipeline_random_subset_is_shared_across_replicates(tmp_path, monkeypatch):
+    from celltype import config, pipeline
+
+    clouds = _toy_clouds(tmp_path, monkeypatch)
+    for rep in range(2):
+        pipeline.compute_distances(clouds, "toy", "axon", "xyz", rep, n_points=20,
+                                   min_synapses=100, use_weights=True, seed=0, n_neurons=6)
+    matrices, _, eligible = clustering.load_replicates(config.distance_dir("toy", "axon", "xyz", 6))
+    assert matrices.shape == (2, 6, 6) and eligible.size == 6
+    assert config.distance_dir("toy", "axon", "xyz", 6).name == "dist_axon_xyz_n6"
+    # K at least the number of eligible neurons means all of them.
+    assert pipeline.select_neurons(clouds, 100, 50, seed=0).size == 9
