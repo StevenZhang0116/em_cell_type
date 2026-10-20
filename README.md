@@ -14,10 +14,14 @@ Inputs are the cell and synapse tables used by the Stage-1 GMM fit in
 | Stage | Function (`celltype/pipeline.py`) | What it does | Output (`output/<dataset>/`) |
 |---|---|---|---|
 | A | `extract_clouds` | All synapses of each proofread neuron, regardless of partner type, as soma-centred offsets `(dx, dy, dz)` with border-compensation weights; lateral cutoff 250 um | `clouds_{axon,dendrite}.npz` |
-| B | `compute_distances` | Each bootstrap replicate: weighted resampling of each neuron, then pairwise 2-Wasserstein distances (exact optimal transport on the soma-relative points) plus each neuron's self-distance (noise floor) | `dist_<side>_<coords>/rep<b>.npz` |
-| C | `cluster_neurons` | Average-linkage clustering of the mean distance matrix, bootstrap stability per k, AMI/ARI with dataset labels, confound checks (soma depth, synapse count, border weight, distance to border) | `cluster_<side>_<coords>/` |
+| B | `compute_distances` | Each bootstrap replicate: weighted resampling of each neuron, then pairwise 2-Wasserstein distances (exact optimal transport on the soma-relative points) plus each neuron's self-distance (noise floor) | `trials/<trial>/dist_<side>_<coords>/rep<b>.npz` |
+| C | `cluster_neurons` | Each replicate is clustered (average linkage) into k major clusters of at least `--min-cluster-size` neurons, smaller clusters becoming outliers (cluster 0); the consensus labels come from clustering the co-clustering matrix. Reports per-replicate ARI against the consensus, PAC (ambiguity), AMI/ARI with dataset labels, confound checks (soma depth, synapse count, border weight, distance to border) | `trials/<trial>/cluster_<side>_<coords>/` |
 
-All three stages run from one script, `scripts/run_pipeline.py`. Options:
+All three stages run from one script, `scripts/run_pipeline.py`. The clouds are shared;
+everything else goes to a trial folder named after the Stage B and C parameters, e.g.
+`output/microns/trials/n10_rep2_pt200_min100_weighted_seed20261019_average_k2-3_mcs5/`
+(parameters also saved in its `config.json`), so runs with different parameters never
+overwrite each other. Options:
 
 - `--coords xyz` (default) compares the 3-D soma-centred offsets `(dx, dy, dz)`, so the
   in-plane direction of an arbor counts. `--coords cylindrical` uses `(r, dy)` with
@@ -26,9 +30,23 @@ All three stages run from one script, `scripts/run_pipeline.py`. Options:
 - `--sides` and `--coords` take several values and the script loops over every
   combination (default: both sides, `xyz`).
 - `--n-neurons K` uses only K randomly chosen neurons per side (same K neurons in every
-  replicate), for a quick test; its outputs go to separate `*_n<K>` directories.
+  replicate), for a quick test.
+- `--min-cluster-size` (default 5): clusters with fewer neurons are reported as outliers
+  (cluster 0, "out" in figures) and do not count towards k.
 - `--stages extract distances cluster` selects stages; finished outputs are skipped
   unless `--overwrite`, so an interrupted job can just be resubmitted.
+
+## Stage C outputs (`trials/<trial>/cluster_<side>_<coords>/`)
+
+| File | Content |
+|---|---|
+| `neurons.csv` | per neuron: covariates, dataset labels, consensus cluster for every reachable k (0 = outlier), self-distance, nearest-neighbour distance, co-clustering stability |
+| `summary.json` | noise floor, chosen k, cluster sizes, per-k stability (median, quartiles, per-replicate ARI), PAC, outlier counts, AMI/ARI with dataset labels, confound statistics; only k whose consensus reaches k major clusters are listed (`k_reached`) |
+| `mean_distance.npy` | replicate-mean distance matrix |
+| `k_curves.png` | per-replicate stability (dots, median, IQR), PAC and AMI with dataset labels vs k |
+| `co_clustering.png` | co-clustering matrix at the chosen k, sorted by consensus cluster |
+| `tree_heatmap.png` | dendrogram of the mean distance matrix with cell_type and cluster barcodes |
+| `noise_floor.png`, `contingency.png`, `covariates.png` | self vs nearest-neighbour distance, cell_type x cluster counts, covariates per cluster |
 
 ## Layout
 

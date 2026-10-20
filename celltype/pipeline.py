@@ -5,8 +5,8 @@ The three stages run by ``scripts/run_pipeline.py``. Each stage reads the
 previous stage's files from ``output/<dataset>/`` and writes its own:
 
   A  extract_clouds     clouds_{axon,dendrite}.npz
-  B  compute_replicate  dist_<side>_<coords>/rep<b>.npz
-  C  cluster_neurons    cluster_<side>_<coords>/
+  B  compute_distances  trials/<trial>/dist_<side>_<coords>/rep<b>.npz
+  C  cluster_neurons    trials/<trial>/cluster_<side>_<coords>/
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def select_neurons(clouds, min_synapses, n_neurons, seed):
     return np.sort(np.random.default_rng(seed).choice(eligible, size=n_neurons, replace=False))
 
 
-def compute_distances(clouds, dataset, side, coords, rep, *,
+def compute_distances(clouds, dataset, trial, side, coords, rep, *,
                       n_points, min_synapses, use_weights, seed, n_neurons=None):
     """Stage B: one bootstrap replicate of the neuron-to-neuron distance matrix."""
     start = time.time()
@@ -76,7 +76,7 @@ def compute_distances(clouds, dataset, side, coords, rep, *,
         clouds, eligible, coords=coords, n_points=n_points, use_weights=use_weights,
         rng=np.random.default_rng([seed, rep]), n_jobs=n_jobs)
 
-    path = distance_dir(dataset, side, coords, n_neurons) / f"rep{rep:03d}.npz"
+    path = distance_dir(dataset, trial, side, coords) / f"rep{rep:03d}.npz"
     np.savez_compressed(path, eligible=eligible, cell_ids=clouds.cell_ids[eligible],
                         n_points=n_points, min_synapses=min_synapses,
                         use_weights=use_weights, **result)
@@ -86,41 +86,55 @@ def compute_distances(clouds, dataset, side, coords, rep, *,
     print(f"Saved {path} ({time.time() - start:.0f}s)")
 
 
-def cluster_neurons(dataset, side, coords, *, linkage, k_values, k=None, n_neurons=None,
-                    run_info=None):
-    """Stage C: cluster the mean distance matrix and write tables and figures."""
+def cluster_neurons(dataset, trial, side, coords, *, linkage, k_values, min_cluster_size,
+                    k=None, run_info=None):
+    """Stage C: consensus clustering over replicates; write tables and figures."""
     matrices, self_distances, eligible = clustering.load_replicates(
-        distance_dir(dataset, side, coords, n_neurons))
+        distance_dir(dataset, trial, side, coords))
     print(f"Loaded {matrices.shape[0]} replicates over {eligible.size} neurons")
     table = clustering.neuron_table(Clouds(clouds_path(dataset, side)), eligible)
     mean_distance = matrices.mean(axis=0)
 
     nearest, self_mean, noise = clustering.noise_summary(mean_distance, self_distances)
-    tree, consensus = clustering.cut_tree(mean_distance, linkage, k_values)
-    stab, replicate_labels = clustering.stability(matrices, consensus, linkage, k_values)
+    replicate_labels = clustering.replicate_cuts(matrices, linkage, k_values, min_cluster_size)
+    consensus, ambiguity = clustering.consensus_clustering(replicate_labels, k_values, linkage,
+                                                           min_cluster_size)
+    stab = clustering.stability(replicate_labels, consensus, k_values)
     agreement = clustering.label_agreement(table, consensus, k_values)
+    # k whose consensus has fewer than k major clusters repeats a smaller cut; blank it out.
+    reached = [kk for kk in k_values if not np.all(np.isnan(stab[kk]))]
+    for kk in set(k_values) - set(reached):
+        ambiguity[kk] = float("nan")
+        for column in agreement:
+            agreement[column][kk] = {"ami": float("nan"), "ari": float("nan")}
     chosen_k = k or clustering.most_stable_k(stab)
     labels = consensus[chosen_k]
+    together = clustering.co_clustering(replicate_labels, chosen_k)
+    tree = clustering.build_tree(mean_distance, linkage)
 
-    outdir = cluster_dir(dataset, side, coords, n_neurons)
-    for kk in k_values:
+    outdir = cluster_dir(dataset, trial, side, coords)
+    for kk in reached:
         table[f"cluster_k{kk}"] = consensus[kk]
     table["self_distance_um"] = self_mean
     table["nearest_neighbour_um"] = nearest
-    table["co_clustering_stability"] = clustering.neuron_stability(replicate_labels, labels, chosen_k)
+    table["co_clustering_stability"] = clustering.neuron_stability(together, labels)
     table.to_csv(outdir / "neurons.csv", index=False)
     np.save(outdir / "mean_distance.npy", mean_distance.astype(np.float32))
 
     summary = {
-        "run": {"dataset": dataset, "side": side, "coords": coords, "linkage": linkage,
+        "run": {"dataset": dataset, "trial": trial, "side": side, "coords": coords, "linkage": linkage,
                 **(run_info or {})},
         "n_neurons": int(eligible.size),
         "n_replicates": int(matrices.shape[0]),
         "noise": noise,
         "chosen_k": chosen_k,
-        "cluster_sizes": {str(c): int(n) for c, n in zip(*np.unique(labels, return_counts=True))},
-        "stability_ari": {str(kk): stab[kk] for kk in k_values},
-        "label_agreement": {column: {str(kk): v for kk, v in per_k.items()}
+        "cluster_sizes": {("outliers" if c == 0 else str(c)): int(n)
+                          for c, n in zip(*np.unique(labels, return_counts=True))},
+        "k_reached": reached,
+        "n_outliers": {str(kk): int(np.sum(consensus[kk] == 0)) for kk in reached},
+        "stability_ari": {str(kk): clustering.stability_summary(stab[kk]) for kk in reached},
+        "pac": {str(kk): ambiguity[kk] for kk in reached},
+        "label_agreement": {column: {str(kk): per_k[kk] for kk in reached}
                             for column, per_k in agreement.items()},
         "distance_vs_covariate_spearman": clustering.covariate_distance_correlation(mean_distance, table),
         "covariate_kruskal": clustering.covariate_tests(table, labels),
@@ -128,10 +142,12 @@ def cluster_neurons(dataset, side, coords, *, linkage, k_values, k=None, n_neuro
     with open(outdir / "summary.json", "w") as handle:
         json.dump(summary, handle, indent=2)
 
-    title = f"{dataset} {side} | {coords} | {linkage}"
+    title = f"{dataset} {side} | {coords} | {linkage} | min cluster {min_cluster_size}"
     plotting.plot_tree_heatmap(tree, mean_distance, table, labels, chosen_k,
                                outdir / "tree_heatmap.png", title)
-    plotting.plot_k_curves(stab, agreement, chosen_k, outdir / "k_curves.png")
+    plotting.plot_k_curves(stab, ambiguity, agreement, chosen_k, outdir / "k_curves.png")
+    plotting.plot_co_clustering(together, labels, clustering.leaf_order(tree), chosen_k,
+                                outdir / "co_clustering.png")
     plotting.plot_noise(nearest, self_mean, outdir / "noise_floor.png")
     plotting.plot_contingency(table, labels, outdir / "contingency.png")
     plotting.plot_covariates(table, labels, outdir / "covariates.png")

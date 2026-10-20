@@ -148,12 +148,15 @@ def test_pipeline_stages_b_and_c_end_to_end(tmp_path, monkeypatch):
 
     clouds = _toy_clouds(tmp_path, monkeypatch)
     for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "axon", "xyz", rep, n_points=40,
+        pipeline.compute_distances(clouds, "toy", "t", "axon", "xyz", rep, n_points=40,
                                    min_synapses=100, use_weights=True, seed=0)
-    pipeline.cluster_neurons("toy", "axon", "xyz", linkage="average", k_values=[2, 3, 4], k=3)
+    pipeline.cluster_neurons("toy", "t", "axon", "xyz", linkage="average", k_values=[2, 3, 4],
+                             min_cluster_size=2, k=3)
 
-    table = pd.read_csv(config.cluster_dir("toy", "axon", "xyz") / "neurons.csv")
+    outdir = config.cluster_dir("toy", "t", "axon", "xyz")
+    table = pd.read_csv(outdir / "neurons.csv")
     assert adjusted_rand_score(table["cell_type"], table["cluster_k3"]) == pytest.approx(1.0)
+    assert (outdir / "co_clustering.png").exists()
 
 
 def test_pipeline_random_subset_is_shared_across_replicates(tmp_path, monkeypatch):
@@ -161,10 +164,69 @@ def test_pipeline_random_subset_is_shared_across_replicates(tmp_path, monkeypatc
 
     clouds = _toy_clouds(tmp_path, monkeypatch)
     for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "axon", "xyz", rep, n_points=20,
+        pipeline.compute_distances(clouds, "toy", "t", "axon", "xyz", rep, n_points=20,
                                    min_synapses=100, use_weights=True, seed=0, n_neurons=6)
-    matrices, _, eligible = clustering.load_replicates(config.distance_dir("toy", "axon", "xyz", 6))
+    matrices, _, eligible = clustering.load_replicates(config.distance_dir("toy", "t", "axon", "xyz"))
     assert matrices.shape == (2, 6, 6) and eligible.size == 6
-    assert config.distance_dir("toy", "axon", "xyz", 6).name == "dist_axon_xyz_n6"
     # K at least the number of eligible neurons means all of them.
     assert pipeline.select_neurons(clouds, 100, 50, seed=0).size == 9
+
+
+def test_trial_name_encodes_every_parameter():
+    from celltype import config
+
+    base = dict(n_neurons=10, n_reps=2, n_points=200, min_synapses=100, use_weights=True,
+                seed=1, linkage="average", k_min=2, k_max=3, min_cluster_size=5)
+    assert config.trial_name(**base) == "n10_rep2_pt200_min100_weighted_seed1_average_k2-3_mcs5"
+    assert config.trial_name(**{**base, "n_neurons": None}).startswith("nall_")
+    names = {config.trial_name(**{**base, key: value}) for key, value in
+             [("n_reps", 3), ("n_points", 100), ("min_synapses", 50), ("use_weights", False),
+              ("seed", 2), ("linkage", "complete"), ("k_max", 5), ("min_cluster_size", 2)]}
+    assert len(names) == 8 and config.trial_name(**base) not in names
+
+
+# ---------------------------------------------------------------------------
+# Clustering
+# ---------------------------------------------------------------------------
+
+def _blobs_with_outlier():
+    """Two groups of 5 points on a line plus one far-away point (index 10)."""
+    x = np.concatenate([np.arange(5) * 0.1, 10 + np.arange(5) * 0.1, [100.0]])
+    return np.abs(x[:, None] - x[None, :])
+
+
+def test_cut_major_skips_small_clusters():
+    tree = clustering.build_tree(_blobs_with_outlier(), "average")
+    # A plain cut into 2 clusters isolates the outlier; the major cut finds the two groups.
+    labels = clustering.cut_major(tree, 2, min_size=3)
+    assert labels[10] == 0
+    assert len(set(labels[:5])) == 1 and len(set(labels[5:10])) == 1
+    assert labels[0] != labels[5] and set(labels[:10]) == {1, 2}
+    # min_size=1 is the ordinary cut: the outlier alone is one of the two clusters.
+    plain = clustering.cut_major(tree, 2, min_size=1)
+    assert sorted(np.bincount(plain)[1:]) == [1, 10]
+    # Only two groups reach min_size: asking for 3 keeps the best cut, not all outliers.
+    fallback = clustering.cut_major(tree, 3, min_size=3)
+    assert set(fallback) == {0, 1, 2} and np.sum(fallback == 0) == 1
+
+
+def test_stability_is_nan_when_consensus_misses_k():
+    distance = _blobs_with_outlier()
+    cuts = clustering.replicate_cuts(np.stack([distance, distance]), "average", [2, 3], 3)
+    consensus, _ = clustering.consensus_clustering(cuts, [2, 3], "average", 3)
+    stab = clustering.stability(cuts, consensus, [2, 3])
+    assert np.all(np.isnan(stab[3])) and np.allclose(stab[2], 1.0)
+    assert clustering.most_stable_k(stab, k_min=3) == 2
+
+
+def test_consensus_and_stability_on_agreeing_replicates():
+    distance = _blobs_with_outlier()
+    cuts = clustering.replicate_cuts(np.stack([distance, distance]), "average", [2], 3)
+    consensus, ambiguity = clustering.consensus_clustering(cuts, [2], "average", 3)
+    assert consensus[2][10] == 0
+    assert clustering.adjusted_rand_score(consensus[2], cuts[0][2]) == pytest.approx(1.0)
+    assert ambiguity[2] == 0.0
+    assert np.allclose(clustering.stability(cuts, consensus, [2])[2], 1.0)
+    together = clustering.co_clustering(cuts, 2)
+    stab = clustering.neuron_stability(together, consensus[2])
+    assert np.isnan(stab[10]) and np.allclose(stab[:10], 1.0)

@@ -7,21 +7,31 @@ Works on the bootstrap replicates of one (side, coords) run:
    the nearest other neuron. Self/nearest near 1 only says the nearest
    neighbour is indistinguishable from the neuron itself (expected inside a
    homogeneous type); compare self-distance with between-cluster distances.
-2. Structure -- average-linkage (default) clustering of the replicate-mean
-   distance matrix. Ward linkage is not offered: it assumes Euclidean
+2. Replicate clusterings -- each replicate's distance matrix gets its own
+   average-linkage (default) tree, cut into k *major* clusters: the tree is
+   split until k clusters hold at least ``min_size`` neurons, and neurons in
+   smaller clusters are labelled 0 (outliers), so a few odd neurons cannot
+   use up the k clusters. Ward linkage is not offered: it assumes Euclidean
    geometry, which Wasserstein distances do not satisfy.
-3. Stability -- each replicate is clustered on its own; the adjusted Rand
-   index (ARI) against the consensus labels is reported for every k.
-4. Old labels and confounds -- AMI/ARI with dataset labels, Kruskal-Wallis
+3. Consensus -- the co-clustering matrix (fraction of replicates that put two
+   neurons in the same major cluster) is clustered again the same way; these
+   are the reported labels. PAC, the fraction of neuron pairs whose
+   co-clustering lies strictly between 0.1 and 0.9, measures ambiguity
+   (lower is more stable).
+4. Stability -- per replicate, the adjusted Rand index (ARI) against the
+   consensus over the consensus non-outlier neurons; the distribution over
+   replicates is reported, not just its mean.
+5. Old labels and confounds -- AMI/ARI with dataset labels, Kruskal-Wallis
    tests of nuisance covariates across clusters, and the Spearman correlation
-   between pairwise distance and |covariate difference|.
+   between pairwise distance and |covariate difference| (outliers excluded
+   where labels are used).
 """
 
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from scipy.cluster.hierarchy import fcluster, linkage
+from scipy.cluster.hierarchy import leaves_list, linkage
 from scipy.spatial.distance import squareform
 from scipy.stats import kruskal, spearmanr
 from sklearn.metrics import adjusted_mutual_info_score, adjusted_rand_score
@@ -90,46 +100,155 @@ def noise_summary(mean_distance, self_distances):
     }
 
 
-def cut_tree(distance, method, k_values):
-    tree = linkage(squareform(distance, checks=False), method=method)
-    return tree, {k: fcluster(tree, t=k, criterion="maxclust") for k in k_values}
+def build_tree(distance, method):
+    return linkage(squareform(distance, checks=False), method=method)
 
 
-def stability(matrices, consensus_labels, method, k_values):
-    """Mean/sd ARI of each replicate's clustering against the consensus, per k."""
-    per_k = {k: [] for k in k_values}
-    replicate_labels = []
+def leaf_order(tree):
+    return leaves_list(tree)
+
+
+def _leaves(tree, node, n):
+    """Leaf indices under one tree node."""
+    stack, leaves = [node], []
+    while stack:
+        current = stack.pop()
+        if current < n:
+            leaves.append(current)
+        else:
+            stack.extend(int(child) for child in tree[current - n, :2])
+    return leaves
+
+
+def cut_major(tree, k, min_size):
+    """Labels 1..k for the k major clusters (largest first); 0 for outliers.
+
+    Merges are undone from the top until k clusters have at least
+    ``min_size`` members. With ``min_size=1`` this is the usual cut into k
+    clusters. If the tree cannot supply k major clusters, the cut with the
+    most major clusters (the first one reached) is returned instead.
+    """
+    n = tree.shape[0] + 1
+
+    def size(node):
+        return 1 if node < n else int(tree[node - n, 3])
+
+    root = 2 * n - 2
+    current = {root}
+    n_major = int(size(root) >= min_size)
+    best_count, best = n_major, set(current)
+    for row in range(n - 2, -1, -1):
+        if n_major >= k:
+            break
+        node = n + row
+        current.remove(node)
+        n_major -= size(node) >= min_size
+        for child in tree[row, :2].astype(int):
+            current.add(int(child))
+            n_major += size(child) >= min_size
+        if n_major > best_count:
+            best_count, best = n_major, set(current)
+    if n_major < k:
+        current = best
+    majors = sorted((c for c in current if size(c) >= min_size), key=lambda c: (-size(c), c))
+    labels = np.zeros(n, dtype=int)
+    for label, node in enumerate(majors[:k], start=1):
+        labels[_leaves(tree, node, n)] = label
+    return labels
+
+
+def replicate_cuts(matrices, method, k_values, min_size):
+    """For every replicate: {k: major-cluster labels} from its own tree."""
+    cuts = []
     for matrix in matrices:
-        _, labels = cut_tree(matrix, method, k_values)
-        replicate_labels.append(labels)
-        for k in k_values:
-            per_k[k].append(adjusted_rand_score(consensus_labels[k], labels[k]))
-    summary = {k: (float(np.mean(v)), float(np.std(v))) for k, v in per_k.items()}
-    return summary, replicate_labels
-
-
-def most_stable_k(stab, k_min=3):
-    """Suggested k: highest mean stability among k >= k_min (k=2 is trivially stable)."""
-    return max((k for k in stab if k >= k_min), key=lambda k: stab[k][0])
+        tree = build_tree(matrix, method)
+        cuts.append({k: cut_major(tree, k, min_size) for k in k_values})
+    return cuts
 
 
 def co_clustering(replicate_labels, k):
-    """Fraction of replicates that put each pair of neurons in the same cluster."""
-    labels = np.stack([rep[k] for rep in replicate_labels])
-    return np.mean(labels[:, :, None] == labels[:, None, :], axis=0)
+    """Fraction of replicates that put each pair in the same major cluster."""
+    n = replicate_labels[0][k].size
+    together = np.zeros((n, n), dtype=np.float32)
+    for labels in replicate_labels:
+        same = labels[k][:, None] == labels[k][None, :]
+        together += same & (labels[k] > 0)[:, None]
+    together /= len(replicate_labels)
+    np.fill_diagonal(together, 1.0)
+    return together
 
 
-def neuron_stability(replicate_labels, labels, k):
-    """Per neuron: mean co-clustering with its consensus cluster mates."""
-    together = co_clustering(replicate_labels, k)
-    return np.array([together[i, labels == labels[i]].mean() for i in range(labels.size)])
+def pac(together, lower=0.1, upper=0.9):
+    """Proportion of ambiguously clustered pairs."""
+    values = together[np.triu_indices(together.shape[0], 1)]
+    return float(np.mean((values > lower) & (values < upper)))
+
+
+def consensus_clustering(replicate_labels, k_values, method, min_size):
+    """Consensus labels per k from the co-clustering matrix, plus PAC per k."""
+    consensus, ambiguity = {}, {}
+    for k in k_values:
+        together = co_clustering(replicate_labels, k)
+        consensus[k] = cut_major(build_tree(1.0 - together, method), k, min_size)
+        ambiguity[k] = pac(together)
+    return consensus, ambiguity
+
+
+def stability(replicate_labels, consensus, k_values):
+    """ARI of each replicate against the consensus (consensus outliers excluded), per k.
+
+    NaN when the consensus has fewer than k major clusters, so that k cannot
+    look stable just because almost every neuron became an outlier.
+    """
+    result = {}
+    for k in k_values:
+        keep = consensus[k] > 0
+        if np.unique(consensus[k][keep]).size < k:
+            result[k] = np.full(len(replicate_labels), np.nan)
+            continue
+        result[k] = np.array([adjusted_rand_score(consensus[k][keep], labels[k][keep])
+                              for labels in replicate_labels])
+    return result
+
+
+def stability_summary(values):
+    """Median, quartiles, mean and raw values; None throughout when k was not reached."""
+    if np.all(np.isnan(values)):
+        return {"median": None, "q25": None, "q75": None, "mean": None, "values": None}
+    q25, median, q75 = np.percentile(values, [25, 50, 75])
+    return {"median": float(median), "q25": float(q25), "q75": float(q75),
+            "mean": float(np.mean(values)), "values": [float(v) for v in values]}
+
+
+def most_stable_k(stab, k_min=3):
+    """Suggested k: highest median (then mean) ARI among valid k >= k_min (k=2 is trivially stable)."""
+    candidates = [k for k in stab if k >= k_min and not np.all(np.isnan(stab[k]))]
+    if not candidates:
+        candidates = [k for k in stab if not np.all(np.isnan(stab[k]))]
+    return max(candidates, key=lambda k: (np.median(stab[k]), np.mean(stab[k])))
+
+
+def neuron_stability(together, labels):
+    """Per neuron: mean co-clustering with its consensus cluster mates; NaN for outliers."""
+    result = np.full(labels.size, np.nan)
+    for i in np.flatnonzero(labels > 0):
+        result[i] = together[i, labels == labels[i]].mean()
+    return result
 
 
 def label_agreement(table, consensus_labels, k_values):
-    return {column: {k: {"ami": float(adjusted_mutual_info_score(table[column], consensus_labels[k])),
-                         "ari": float(adjusted_rand_score(table[column], consensus_labels[k]))}
-                     for k in k_values}
-            for column in LABEL_COLUMNS}
+    """AMI/ARI with each dataset label column over the non-outlier neurons."""
+    result = {column: {} for column in LABEL_COLUMNS}
+    for k in k_values:
+        keep = consensus_labels[k] > 0
+        for column in LABEL_COLUMNS:
+            if keep.sum() < 2:
+                result[column][k] = {"ami": float("nan"), "ari": float("nan")}
+                continue
+            truth, labels = table[column].to_numpy()[keep], consensus_labels[k][keep]
+            result[column][k] = {"ami": float(adjusted_mutual_info_score(truth, labels)),
+                                 "ari": float(adjusted_rand_score(truth, labels))}
+    return result
 
 
 def covariate_distance_correlation(mean_distance, table):
@@ -147,10 +266,10 @@ def covariate_distance_correlation(mean_distance, table):
 
 
 def covariate_tests(table, labels):
-    """Kruskal-Wallis test of each covariate across clusters of size >= 2."""
+    """Kruskal-Wallis test of each covariate across clusters (outliers excluded)."""
     tests = {}
     for column in present_covariates(table):
-        groups = [table[column][labels == c] for c in np.unique(labels)]
+        groups = [table[column][labels == c] for c in np.unique(labels) if c > 0]
         groups = [g for g in groups if len(g) >= 2]
         if len(groups) >= 2:
             statistic, p_value = kruskal(*groups)

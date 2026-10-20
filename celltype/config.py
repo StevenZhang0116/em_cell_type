@@ -5,11 +5,13 @@ Input tables are the ones used by the Stage-1 GMM fit in
 ``../mixture/src/modeling/mixture_all.py``. Stage outputs live under
 ``output/<dataset>/``:
 
-  clouds_<side>.npz                               (Stage A)
-  dist_<side>_<coords>[_n<K>]/rep<b>.npz           (Stage B)
-  cluster_<side>_<coords>[_n<K>]/...               (Stage C)
+  clouds_<side>.npz                                     (Stage A, shared)
+  trials/<trial>/config.json                            (run parameters)
+  trials/<trial>/dist_<side>_<coords>/rep<b>.npz        (Stage B)
+  trials/<trial>/cluster_<side>_<coords>/...            (Stage C)
 
-The ``_n<K>`` suffix marks a quick-test run on K randomly chosen neurons.
+``<trial>`` is built from the Stage B and C parameters (``trial_name``), so
+runs with different parameters never share or overwrite each other's files.
 """
 
 from __future__ import annotations
@@ -53,9 +55,19 @@ def allocated_cpus():
     return int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
 
 
-def run_name(side, coords, n_neurons=None):
-    name = f"{side}_{coords}"
-    return name if n_neurons is None else f"{name}_n{n_neurons}"
+def run_name(side, coords):
+    return f"{side}_{coords}"
+
+
+def trial_name(*, n_neurons, n_reps, n_points, min_synapses, use_weights, seed,
+               linkage, k_min, k_max, min_cluster_size, k=None):
+    """Readable folder name that encodes every Stage B and C parameter."""
+    parts = [f"n{n_neurons or 'all'}", f"rep{n_reps}", f"pt{n_points}", f"min{min_synapses}",
+             "weighted" if use_weights else "unweighted", f"seed{seed}", linkage,
+             f"k{k_min}-{k_max}", f"mcs{min_cluster_size}"]
+    if k is not None:
+        parts.append(f"show{k}")
+    return "_".join(parts)
 
 
 def _ensure(path):
@@ -71,9 +83,13 @@ def clouds_path(dataset, side):
     return dataset_dir(dataset) / f"clouds_{side}.npz"
 
 
-def distance_dir(dataset, side, coords, n_neurons=None):
-    return _ensure(dataset_dir(dataset) / f"dist_{run_name(side, coords, n_neurons)}")
+def trial_dir(dataset, trial):
+    return _ensure(dataset_dir(dataset) / "trials" / trial)
 
 
-def cluster_dir(dataset, side, coords, n_neurons=None):
-    return _ensure(dataset_dir(dataset) / f"cluster_{run_name(side, coords, n_neurons)}")
+def distance_dir(dataset, trial, side, coords):
+    return _ensure(trial_dir(dataset, trial) / f"dist_{run_name(side, coords)}")
+
+
+def cluster_dir(dataset, trial, side, coords):
+    return _ensure(trial_dir(dataset, trial) / f"cluster_{run_name(side, coords)}")
