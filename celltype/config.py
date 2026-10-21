@@ -10,11 +10,13 @@ Input tables are the ones used by the Stage-1 GMM fit in
   trials/<trial>/config.json                     (run parameters)
   trials/<trial>/shared_<side>.npz               (Stage B, --method shared only)
   trials/<trial>/dist_<side>/rep<b>.npz          (Stage B)
-  trials/<trial>/cluster_<side>/...              (Stage C)
-  trials/<trial>/assign_<side>_<query>/...       (Stage D)
+  trials/<trial>/cluster_<side>[_dw<l>]/...      (Stage C; _dw<l> = soma-depth weight l > 0)
+  trials/<trial>/assign_<side>[_dw<l>]_<query>/  (Stage D)
 
 ``<trial>`` is built from the Stage B and C parameters (``trial_name``), so
 runs with different parameters never share or overwrite each other's files.
+The soma-depth weight only changes Stages C and D, so its runs sit side by
+side inside one trial and share the distance files.
 """
 
 from __future__ import annotations
@@ -102,9 +104,14 @@ def distance_dir(dataset, trial, side):
     return _ensure(trial_dir(dataset, trial) / f"dist_{side}")
 
 
-def cluster_dir(dataset, trial, side):
-    return _ensure(trial_dir(dataset, trial) / f"cluster_{side}")
+def _depth_suffix(depth_weight):
+    """``_dw<lambda>`` for a non-zero soma-depth weight (Stage C/D option), else nothing."""
+    return f"_dw{depth_weight:g}" if depth_weight else ""
 
 
-def assign_dir(dataset, trial, side, query):
-    return _ensure(trial_dir(dataset, trial) / f"assign_{side}_{query}")
+def cluster_dir(dataset, trial, side, depth_weight=0.0):
+    return _ensure(trial_dir(dataset, trial) / f"cluster_{side}{_depth_suffix(depth_weight)}")
+
+
+def assign_dir(dataset, trial, side, query, depth_weight=0.0):
+    return _ensure(trial_dir(dataset, trial) / f"assign_{side}{_depth_suffix(depth_weight)}_{query}")

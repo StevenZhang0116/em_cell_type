@@ -17,7 +17,7 @@ Inputs are the cell and synapse tables used by the Stage-1 GMM fit in
 | A | `extract_clouds` | All synapses of each proofread neuron, regardless of partner type, as soma-centred offsets `(dx, dy, dz)` in um with border-compensation weights; lateral cutoff 250 um. `--all-cells` also extracts the dendrite clouds of every cell in the table | `clouds_{axon,dendrite}.npz`, `clouds_dendrite_all.npz` |
 | B | `compute_distances` | Each bootstrap replicate: a neuron-to-neuron distance matrix plus each neuron's self-distance (noise floor). `--method points`: weighted resampling of `--n-points` synapses per neuron, then exact 2-Wasserstein distances between the 3-D soma-relative point clouds (so the in-plane direction of an arbor counts). `--method shared`: MW2 between mixing weights over one shared Gaussian mixture per side (`fit_shared_model`), see below | `trials/<trial>/dist_<side>/rep<b>.npz`, `trials/<trial>/shared_<side>.npz` |
 | C | `cluster_neurons` | Each replicate is clustered (average linkage) into k major clusters of at least `--min-cluster-size` neurons, smaller clusters becoming outliers (cluster 0); the consensus labels come from clustering the co-clustering matrix. Reports per-replicate ARI against the consensus, PAC (ambiguity), AMI/ARI with dataset labels, confound checks (soma depth, synapse count, border weight, distance to border) | `trials/<trial>/cluster_<side>/` |
-| D | `assign_neurons` | Turns the consensus clusters into a classifier for neurons that were not clustered (see below): k-nearest references on W2 and cluster-template GMM likelihood, both calibrated by cross-validation on the clustered neurons | `trials/<trial>/assign_<side>_<query>/` |
+| D | `assign_neurons` | Turns the consensus clusters into a classifier for neurons that were not clustered (see below): k-nearest references on W2 and cluster-template GMM likelihood, both calibrated by cross-validation on the clustered neurons | `trials/<trial>/assign_<side>[_dw<lambda>]_<query>/` |
 
 All stages run from one script, `scripts/run_pipeline.py`. The clouds are shared;
 everything else goes to a trial folder named after the Stage B and C parameters, e.g.
@@ -57,6 +57,30 @@ kNN always uses the point-cloud W2). The trial name differs in its third token (
 correlation of the distance matrices, self/nearest ratio, chosen k with stability and PAC,
 AMI with `cell_type`, and the ARI between the two consensus labelings.
 
+## Soma depth (`--depth-weight`)
+
+Soma-relative coordinates remove the laminar position of a neuron, which is most of
+what the dataset labels encode. Stage C can add it back as a separate, weighted term:
+
+```
+D'(i, j)^2 = W2(i, j)^2 + lambda * (soma depth_i - soma depth_j)^2      (um)
+```
+
+This equals the W2 after appending `sqrt(lambda) * soma depth` as a constant coordinate
+to every synapse, so it is exact, applied to the stored replicates (no Stage B rerun), and
+`lambda = 0` is the default behaviour. Several values run Stage C once each into
+`cluster_<side>_dw<lambda>/` (and Stage D into `assign_<side>_dw<lambda>_<query>/`, where the
+kNN distances carry the same term; the template method keeps its depth prior instead).
+`summary.json` reports `depth_share_of_squared_distance` (median share of the depth term)
+and `cluster_soma_depth` (depth quartiles per cluster and the fraction of cluster pairs
+whose depth IQRs overlap; 0 means the clusters are pure depth bands). Two cautions: soma
+depth has no resampling noise, so bootstrap stability and AMI with laminar labels rise
+automatically as `lambda` grows and stop being evidence of better types; and a `lambda` that
+turns every cluster into a depth band has merely rediscovered the layers. Typical pairwise
+depth differences are about 200 um, so the two terms are of equal size near `lambda` 0.1
+(dendrites) to 0.5 (axons); scan, e.g. `--depth-weight 0 0.05 0.1 0.25 0.5 1`, and compare
+runs with `scripts/compare_trials.py --dw-a 0 --dw-b 0.25`.
+
 ## Stage D: assigning neurons to the clusters
 
 The clustering is quadratic in the number of neurons, so the dendrite side (15k
@@ -95,7 +119,7 @@ proofread set is not a random sample, so the depth prior's cluster proportions m
 match the whole population; compare `template` with `template_prior`. Non-proofread
 dendrites (`--query all`) may be truncated or merged.
 
-### Stage D outputs (`trials/<trial>/assign_<side>_<query>/`)
+### Stage D outputs (`trials/<trial>/assign_<side>[_dw<lambda>]_<query>/`)
 
 | File | Content |
 |---|---|
@@ -106,12 +130,12 @@ dendrites (`--query all`) may be truncated or merged.
 | `cv_confusion.png`, `cv_reliability.png` | held-out confusion matrices; accuracy vs posterior confidence |
 | `templates.png`, `queries.png` | template densities over member synapses; query confidence and label counts |
 
-## Stage C outputs (`trials/<trial>/cluster_<side>/`)
+## Stage C outputs (`trials/<trial>/cluster_<side>[_dw<lambda>]/`)
 
 | File | Content |
 |---|---|
 | `neurons.csv` | per neuron: covariates, dataset labels, consensus cluster for every reachable k (0 = outlier), self-distance, nearest-neighbour distance, co-clustering stability |
-| `summary.json` | noise floor, chosen k, cluster sizes, per-k stability (median, quartiles, per-replicate ARI), PAC, outlier counts, AMI/ARI with dataset labels, confound statistics; only k whose consensus reaches k major clusters are listed (`k_reached`) |
+| `summary.json` | noise floor, soma-depth weight and share, chosen k, cluster sizes, per-k stability (median, quartiles, per-replicate ARI), PAC, outlier counts, AMI/ARI with dataset labels, per-cluster soma-depth quartiles, confound statistics; only k whose consensus reaches k major clusters are listed (`k_reached`) |
 | `mean_distance.npy` | replicate-mean distance matrix |
 | `k_curves.png` | per-replicate stability (dots, median, IQR), PAC and AMI with dataset labels vs k |
 | `co_clustering.png` | co-clustering matrix at the chosen k, sorted by consensus cluster |
@@ -144,6 +168,7 @@ sbatch jobs/pipeline.slurm --sides axon                   # all 1.7k proofread a
 sbatch jobs/pipeline.slurm --sides dendrite --n-neurons 3000   # cluster 3k dendrites, assign the other 12k
 sbatch jobs/pipeline.slurm --n-neurons 1000 --stages distances cluster   # demo without Stage D
 sbatch jobs/pipeline.slurm --n-neurons 1000 --stages distances cluster --method shared   # same neurons, MW2
+sbatch jobs/pipeline.slurm --n-neurons 1000 --stages cluster --depth-weight 0 0.1 0.25 0.5   # soma-depth scan
 $PYTHON scripts/compare_trials.py --trial-a n1000_rep10_pt200_... --trial-b n1000_rep10_shared30_a10_...
 sbatch jobs/pipeline.slurm --stages extract --all-cells   # dendrite clouds of every cell (96 GB job)
 sbatch jobs/pipeline.slurm --sides dendrite --n-neurons 3000 --stages assign --query all

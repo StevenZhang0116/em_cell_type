@@ -25,6 +25,10 @@ Works on the bootstrap replicates of one side:
    tests of nuisance covariates across clusters, and the Spearman correlation
    between pairwise distance and |covariate difference| (outliers excluded
    where labels are used).
+6. Soma depth (optional) -- ``add_depth_term`` appends the soma depth as a
+   separately weighted coordinate, ``D'^2 = D^2 + lambda * (depth_i - depth_j)^2``,
+   exactly and on the stored replicates; ``depth_share`` and
+   ``cluster_depth_summary`` report how much of the result it accounts for.
 """
 
 from __future__ import annotations
@@ -79,6 +83,47 @@ def neuron_table(clouds, eligible):
 
 def present_covariates(table):
     return [column for column in COVARIATE_COLUMNS if column in table]
+
+
+# ---------------------------------------------------------------------------
+# Soma depth as an extra, separately weighted coordinate
+# ---------------------------------------------------------------------------
+
+def add_depth_term(distance, depths_rows, depths_cols, weight):
+    """``sqrt(D^2 + weight * (depth_i - depth_j)^2)`` over the last two axes of ``distance``.
+
+    Exact for the point-cloud W2: a per-neuron constant coordinate shifts every
+    entry of the transport cost by the same amount, so the optimal coupling does
+    not change. ``weight`` 0 returns the input unchanged.
+    """
+    if weight == 0:
+        return distance
+    delta = np.asarray(depths_rows, dtype=float)[:, None] - np.asarray(depths_cols, dtype=float)[None, :]
+    return np.sqrt(distance ** 2 + weight * delta ** 2)
+
+
+def depth_share(distance, depths, weight):
+    """Median over neuron pairs of the depth term's share of the squared distance."""
+    if weight == 0:
+        return 0.0
+    upper = np.triu_indices(distance.shape[0], 1)
+    depths = np.asarray(depths, dtype=float)
+    delta2 = (depths[:, None] - depths[None, :])[upper] ** 2
+    return float(np.median(weight * delta2 / np.maximum(distance[upper] ** 2, 1e-12)))
+
+
+def cluster_depth_summary(depths, labels):
+    """Soma-depth quartiles per cluster and the fraction of cluster pairs whose
+    interquartile depth ranges overlap (0 means the clusters are pure depth bands)."""
+    depths = np.asarray(depths, dtype=float)
+    clusters = [int(c) for c in np.unique(labels) if c > 0]
+    quartiles = {c: [float(q) for q in np.percentile(depths[labels == c], [25, 50, 75])]
+                 for c in clusters}
+    pairs = [(a, b) for i, a in enumerate(clusters) for b in clusters[i + 1:]]
+    overlapping = sum(quartiles[a][0] <= quartiles[b][2] and quartiles[b][0] <= quartiles[a][2]
+                      for a, b in pairs)
+    return {"quartiles_um": quartiles,
+            "fraction_of_cluster_pairs_with_overlapping_iqr": overlapping / len(pairs) if pairs else None}
 
 
 # ---------------------------------------------------------------------------

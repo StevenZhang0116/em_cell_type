@@ -19,6 +19,7 @@ Example::
     python -u scripts/run_pipeline.py --n-neurons 50 --n-reps 2   # quick test
     python -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --query rest
     python -u scripts/run_pipeline.py --n-neurons 1000 --method shared --stages distances cluster
+    python -u scripts/run_pipeline.py --n-neurons 1000 --stages cluster --depth-weight 0 0.1 0.5
 """
 
 from __future__ import annotations
@@ -85,6 +86,10 @@ def main():
                              "and do not count towards k")
     parser.add_argument("--k", type=int, default=None,
                         help="k for the detailed figures and for Stage D (default: most stable k >= 3)")
+    parser.add_argument("--depth-weight", nargs="+", type=float, default=[0.0],
+                        help="lambda in D'^2 = W2^2 + lambda * (soma depth difference in um)^2; "
+                             "0 ignores soma depth. Several values run Stages C and D once per "
+                             "value (cluster_<side>_dw<lambda>) on the same distance files")
     # Stage D
     parser.add_argument("--query", choices=("rest", "all", "none"), default="rest",
                         help="neurons to assign: the proofread neurons not clustered (rest), "
@@ -152,31 +157,38 @@ def main():
                     shared_alpha=args.shared_alpha)
                 fresh = True
 
+        reclustered = set()   # depth weights whose Stage C was recomputed in this run
         if "cluster" in args.stages:
-            summary = cluster_dir(args.dataset, trial, side) / "summary.json"
-            if summary.exists() and not (fresh or args.overwrite):
-                print(f"== Stage C: {side} already clustered")
-            else:
-                print(f"== Stage C: {side}")
+            for weight in args.depth_weight:
+                tag = f"{side} | depth weight {weight:g}"
+                summary = cluster_dir(args.dataset, trial, side, weight) / "summary.json"
+                if summary.exists() and not (fresh or args.overwrite):
+                    print(f"== Stage C: {tag} already clustered")
+                    continue
+                print(f"== Stage C: {tag}")
                 pipeline.cluster_neurons(
                     args.dataset, trial, side, linkage=args.linkage,
                     k_values=list(range(args.k_min, args.k_max + 1)),
-                    min_cluster_size=args.min_cluster_size, k=args.k, run_info=params)
-                fresh = True
+                    min_cluster_size=args.min_cluster_size, depth_weight=weight, k=args.k,
+                    run_info=params)
+                reclustered.add(weight)
 
         if "assign" in args.stages:
-            summary = assign_dir(args.dataset, trial, side, args.query) / "summary.json"
-            if summary.exists() and not (fresh or args.overwrite):
-                print(f"== Stage D: {side} | {args.query} already assigned")
-            else:
-                print(f"== Stage D: {side} | query {args.query}")
+            for weight in args.depth_weight:
+                tag = f"{side} | depth weight {weight:g} | query {args.query}"
+                summary = assign_dir(args.dataset, trial, side, args.query, weight) / "summary.json"
+                if summary.exists() and not (fresh or weight in reclustered or args.overwrite):
+                    print(f"== Stage D: {tag} already assigned")
+                    continue
+                print(f"== Stage D: {tag}")
                 pipeline.assign_neurons(
                     args.dataset, trial, side, query=args.query,
                     n_points=args.n_points, min_synapses=args.min_synapses,
                     use_weights=not args.no_weights, seed=args.seed, n_reps=args.assign_reps,
                     n_neighbours=args.knn, template_k_max=args.template_k_max,
                     template_points=args.template_points, cv_folds=args.cv_folds,
-                    reject_quantile=args.reject_quantile, k=args.k, run_info=params)
+                    reject_quantile=args.reject_quantile, depth_weight=weight, k=args.k,
+                    run_info=params)
         print(f"   elapsed {(time.time() - start) / 3600:.2f} h")
 
     print(f"All done in {(time.time() - start) / 3600:.2f} h")
