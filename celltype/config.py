@@ -50,7 +50,7 @@ DATASETS = {
 LABEL_COLUMNS = ("classification_system", "cell_type", "cell_type_v2")
 
 # Per-neuron nuisance variables checked against the clusters.
-COVARIATE_COLUMNS = ("soma_depth_um", "n_synapses", "mean_border_weight", "dist_border")
+COVARIATE_COLUMNS = ("soma_depth_um", "n_synapses", "mean_border_weight", "dist_border_um")
 
 
 def allocated_cpus():
@@ -60,17 +60,24 @@ def allocated_cpus():
 
 def trial_name(*, n_neurons, n_reps, n_points, min_synapses, use_weights, seed,
                linkage, k_min, k_max, min_cluster_size, k=None,
-               method="points", shared_k=30, shared_alpha=10.0):
+               method="points", shared_k=30, shared_alpha=10.0, align=False, min_border=0.0):
     """Readable folder name that encodes every Stage B and C parameter.
 
     The third token says how neurons are compared: ``pt<n>`` for the point-cloud
     W2 on ``n`` resampled synapses, ``shared<K>_a<alpha>`` for MW2 between
     mixing weights over K shared components with Dirichlet strength alpha.
+    ``aligned`` marks canonically rotated clouds, ``border<um>`` a minimum soma
+    distance from the volume border.
     """
     sampling = f"pt{n_points}" if method == "points" else f"shared{shared_k}_a{shared_alpha:g}"
-    parts = [f"n{n_neurons or 'all'}", f"rep{n_reps}", sampling, f"min{min_synapses}",
-             "weighted" if use_weights else "unweighted", f"seed{seed}", linkage,
-             f"k{k_min}-{k_max}", f"mcs{min_cluster_size}"]
+    parts = [f"n{n_neurons or 'all'}", f"rep{n_reps}", sampling]
+    if align:
+        parts.append("aligned")
+    parts.append(f"min{min_synapses}")
+    if min_border:
+        parts.append(f"border{min_border:g}")
+    parts += ["weighted" if use_weights else "unweighted", f"seed{seed}", linkage,
+              f"k{k_min}-{k_max}", f"mcs{min_cluster_size}"]
     if k is not None:
         parts.append(f"show{k}")
     return "_".join(parts)

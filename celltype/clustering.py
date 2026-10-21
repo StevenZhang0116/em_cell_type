@@ -75,7 +75,7 @@ def neuron_table(clouds, eligible):
         "mean_border_weight": [float(clouds.neuron_weights(i).mean()) for i in eligible],
     })
     if "dist_border" in meta:
-        table["dist_border"] = meta["dist_border"][eligible]
+        table["dist_border_um"] = meta["dist_border"][eligible] / 1000.0   # stored in nm
     for column in LABEL_COLUMNS:
         table[column] = meta[f"label_{column}"][eligible]
     return table
@@ -265,12 +265,26 @@ def stability_summary(values):
             "mean": float(np.mean(values)), "values": [float(v) for v in values]}
 
 
-def most_stable_k(stab, k_min=3):
-    """Suggested k: highest median (then mean) ARI among valid k >= k_min (k=2 is trivially stable)."""
-    candidates = [k for k in stab if k >= k_min and not np.all(np.isnan(stab[k]))]
-    if not candidates:
-        candidates = [k for k in stab if not np.all(np.isnan(stab[k]))]
-    return max(candidates, key=lambda k: (np.median(stab[k]), np.mean(stab[k])))
+def most_stable_k(stab, ambiguity, k_min=3, ari_tolerance=0.03, pac_tolerance=0.05):
+    """Suggested k and the reasoning behind it.
+
+    Among valid k >= ``k_min`` (k=2 is trivially stable), keep those whose
+    median ARI is within ``ari_tolerance`` of the best, then those whose PAC
+    is within ``pac_tolerance`` of the lowest PAC in that set, and take the
+    largest: a flat stability curve means the extra clusters are real stable
+    splits, so resolution is preferred unless ambiguity rises.
+    """
+    valid = [k for k in stab if not np.all(np.isnan(stab[k]))]
+    candidates = [k for k in valid if k >= k_min] or valid
+    medians = {k: float(np.median(stab[k])) for k in candidates}
+    best = max(medians.values())
+    near = [k for k in candidates if medians[k] >= best - ari_tolerance]
+    lowest_pac = min(ambiguity[k] for k in near)
+    chosen = max(k for k in near if ambiguity[k] <= lowest_pac + pac_tolerance)
+    return chosen, {"rule": f"largest k with median ARI >= best - {ari_tolerance} and "
+                            f"PAC <= lowest PAC among those + {pac_tolerance}",
+                    "best_median_ari": best, "within_ari_tolerance": near,
+                    "lowest_pac_among_those": float(lowest_pac), "chosen": chosen}
 
 
 def neuron_stability(together, labels):

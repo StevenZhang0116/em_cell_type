@@ -20,6 +20,7 @@ Example::
     python -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --query rest
     python -u scripts/run_pipeline.py --n-neurons 1000 --method shared --stages distances cluster
     python -u scripts/run_pipeline.py --n-neurons 1000 --stages cluster --depth-weight 0 0.1 0.5
+    python -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --align --min-border-distance 50
 """
 
 from __future__ import annotations
@@ -71,6 +72,13 @@ def main():
                         help="[shared] pooled synapses used to fit the shared mixture")
     parser.add_argument("--min-synapses", type=int, default=100,
                         help="neurons with fewer synapses are excluded")
+    parser.add_argument("--min-border-distance", type=float, default=0.0,
+                        help="exclude neurons whose soma is closer than this (um) to the volume "
+                             "border, whose arbors are truncated (default 0: keep all)")
+    parser.add_argument("--align", action="store_true",
+                        help="rotate every cloud about the soma's vertical axis into a canonical "
+                             "orientation first, so the arbitrary in-plane direction of an arbor "
+                             "does not enter the distance")
     parser.add_argument("--n-neurons", type=int, default=None,
                         help="cluster only this many randomly chosen neurons per side "
                              "(default: all); the rest can be assigned in Stage D")
@@ -125,7 +133,8 @@ def main():
 
     params = {"method": args.method, "n_neurons": args.n_neurons, "n_reps": args.n_reps,
               "n_points": args.n_points, "shared_k": args.shared_k, "shared_alpha": args.shared_alpha,
-              "min_synapses": args.min_synapses, "use_weights": not args.no_weights,
+              "align": args.align, "min_synapses": args.min_synapses,
+              "min_border": args.min_border_distance, "use_weights": not args.no_weights,
               "seed": args.seed, "linkage": args.linkage, "k_min": args.k_min,
               "k_max": args.k_max, "min_cluster_size": args.min_cluster_size, "k": args.k}
     trial = trial_name(**params)
@@ -136,14 +145,15 @@ def main():
     for side in args.sides:
         fresh = False   # an upstream output was recomputed in this run
         if "distances" in args.stages:
-            clouds = Clouds(clouds_path(args.dataset, side))
+            clouds = Clouds(clouds_path(args.dataset, side), align=args.align)
             shared_model = None
             if args.method == "shared":
                 print(f"== Stage B: {side} | shared mixture")
                 shared_model = pipeline.fit_shared_model(
                     clouds, args.dataset, trial, side, min_synapses=args.min_synapses,
                     n_neurons=args.n_neurons, seed=args.seed, use_weights=not args.no_weights,
-                    n_components=args.shared_k, fit_points=args.shared_fit_points)
+                    n_components=args.shared_k, fit_points=args.shared_fit_points,
+                    min_border_um=args.min_border_distance)
             for rep in range(args.n_reps):
                 path = distance_dir(args.dataset, trial, side) / f"rep{rep:03d}.npz"
                 if path.exists() and not args.overwrite:
@@ -153,8 +163,8 @@ def main():
                     clouds, args.dataset, trial, side, rep,
                     n_points=args.n_points, min_synapses=args.min_synapses,
                     use_weights=not args.no_weights, seed=args.seed,
-                    n_neurons=args.n_neurons, method=args.method, shared_model=shared_model,
-                    shared_alpha=args.shared_alpha)
+                    n_neurons=args.n_neurons, min_border_um=args.min_border_distance,
+                    method=args.method, shared_model=shared_model, shared_alpha=args.shared_alpha)
                 fresh = True
 
         reclustered = set()   # depth weights whose Stage C was recomputed in this run
@@ -187,7 +197,8 @@ def main():
                     use_weights=not args.no_weights, seed=args.seed, n_reps=args.assign_reps,
                     n_neighbours=args.knn, template_k_max=args.template_k_max,
                     template_points=args.template_points, cv_folds=args.cv_folds,
-                    reject_quantile=args.reject_quantile, depth_weight=weight, k=args.k,
+                    reject_quantile=args.reject_quantile, depth_weight=weight,
+                    min_border_um=args.min_border_distance, align=args.align, k=args.k,
                     run_info=params)
         print(f"   elapsed {(time.time() - start) / 3600:.2f} h")
 

@@ -25,7 +25,7 @@ from . import assign, clustering, plotting, shared
 from .clouds import Clouds, build_side, load_cell_table, load_synapses, proofread_cells
 from .config import (SIDES, allocated_cpus, assign_dir, cluster_dir, clouds_path, distance_dir,
                      shared_model_path)
-from .distances import compute_replicate
+from .distances import alignment_check, compute_replicate, resample_clouds
 
 
 def extract_clouds(dataset, lateral_cutoff):
@@ -78,26 +78,40 @@ def extract_all_dendrites(dataset, lateral_cutoff):
     print(f"Saved {path} ({time.time() - start:.0f}s)")
 
 
-def select_neurons(clouds, min_synapses, n_neurons, seed):
-    """Neurons with enough synapses; optionally a random subset of ``n_neurons``.
+def eligible_neurons(clouds, min_synapses, min_border_um=0.0):
+    """Neurons with enough synapses whose soma is at least ``min_border_um`` from the volume border.
+
+    Border truncation cuts arbors and produces spurious clusters; ``dist_border``
+    is stored in nm, the threshold is given in um.
+    """
+    keep = clouds.n_synapses >= min_synapses
+    if min_border_um > 0:
+        if "dist_border" not in clouds.meta:
+            raise ValueError("this dataset has no dist_border column; drop --min-border-distance")
+        keep &= clouds.meta["dist_border"] >= min_border_um * 1000.0
+    return np.flatnonzero(keep)
+
+
+def select_neurons(clouds, min_synapses, n_neurons, seed, min_border_um=0.0):
+    """Eligible neurons; optionally a random subset of ``n_neurons``.
 
     The subset depends only on ``seed``, so every replicate uses the same neurons.
     """
-    eligible = np.flatnonzero(clouds.n_synapses >= min_synapses)
+    eligible = eligible_neurons(clouds, min_synapses, min_border_um)
     if n_neurons is None or n_neurons >= eligible.size:
         return eligible
     return np.sort(np.random.default_rng(seed).choice(eligible, size=n_neurons, replace=False))
 
 
 def fit_shared_model(clouds, dataset, trial, side, *, min_synapses, n_neurons, seed, use_weights,
-                     n_components, fit_points):
+                     n_components, fit_points, min_border_um=0.0):
     """Stage B (``--method shared``): the side's shared mixture, fitted once per trial."""
     path = shared_model_path(dataset, trial, side)
     if path.exists():
         print(f"[{side}] loading shared mixture {path}")
         return shared.SharedGMM.load(path)
     start = time.time()
-    eligible = select_neurons(clouds, min_synapses, n_neurons, seed)
+    eligible = select_neurons(clouds, min_synapses, n_neurons, seed, min_border_um)
     sample = shared.pooled_sample(clouds, eligible, fit_points, use_weights,
                                   np.random.default_rng([seed, 6]))
     print(f"[{side}] fitting {n_components} shared components on {sample.shape[0]} synapses "
@@ -112,23 +126,38 @@ def fit_shared_model(clouds, dataset, trial, side, *, min_synapses, n_neurons, s
 
 
 def compute_distances(clouds, dataset, trial, side, rep, *, n_points, min_synapses, use_weights,
-                      seed, n_neurons=None, method="points", shared_model=None, shared_alpha=10.0):
+                      seed, n_neurons=None, min_border_um=0.0, method="points", shared_model=None,
+                      shared_alpha=10.0):
     """Stage B: one bootstrap replicate of the neuron-to-neuron distance matrix.
 
     ``method="points"``: W2 between resampled point clouds (``distances.py``);
     ``method="shared"``: MW2 between mixing weights over ``shared_model`` (``shared.py``).
+    Replicate 0 of the points method also reports, on 100 random pairs, how
+    much smaller the W2 would be at the best in-plane rotation (``alignment_check``).
     """
     start = time.time()
     n_jobs = allocated_cpus()
-    eligible = select_neurons(clouds, min_synapses, n_neurons, seed)
+    eligible = select_neurons(clouds, min_synapses, n_neurons, seed, min_border_um)
     n_enough = int(np.sum(clouds.n_synapses >= min_synapses))
-    print(f"[{side}] {n_enough} / {len(clouds)} neurons have >= {min_synapses} synapses; "
-          f"using {eligible.size}; replicate {rep}; method {method}; {n_jobs} CPUs")
+    n_border = n_enough - eligible_neurons(clouds, min_synapses, min_border_um).size
+    print(f"[{side}] {n_enough} / {len(clouds)} neurons have >= {min_synapses} synapses, "
+          f"{n_border} of them within {min_border_um:g} um of the border; using {eligible.size}; "
+          f"replicate {rep}; method {method}; aligned {clouds.align}; {n_jobs} CPUs")
 
     rng = np.random.default_rng([seed, rep])
     if method == "points":
         result = compute_replicate(clouds, eligible, n_points=n_points, use_weights=use_weights,
                                    rng=rng, n_jobs=n_jobs)
+        if rep == 0 and eligible.size >= 2:
+            check_rng = np.random.default_rng([seed, 99])
+            subset = check_rng.choice(eligible, size=min(100, eligible.size), replace=False)
+            sample, _ = resample_clouds(clouds, subset, n_points, use_weights, check_rng)
+            pairs, given, best = alignment_check(sample, check_rng)
+            ratio = given / np.maximum(best, 1e-9)
+            print(f"alignment check ({pairs.shape[0]} pairs): W2 / W2 at best rotation: "
+                  f"median {np.median(ratio):.3f}, 90th percentile {np.percentile(ratio, 90):.3f}")
+            result.update(alignment_check_pairs=subset[pairs], alignment_check_w2=given,
+                          alignment_check_rotation_min_w2=best)
     else:
         result = shared.compute_replicate(clouds, eligible, shared_model, alpha=shared_alpha,
                                           use_weights=use_weights, rng=rng, n_jobs=n_jobs)
@@ -136,6 +165,7 @@ def compute_distances(clouds, dataset, trial, side, rep, *, n_points, min_synaps
     path = distance_dir(dataset, trial, side) / f"rep{rep:03d}.npz"
     np.savez_compressed(path, eligible=eligible, cell_ids=clouds.cell_ids[eligible],
                         method=method, n_points=n_points, min_synapses=min_synapses,
+                        min_border_um=min_border_um, aligned=clouds.align,
                         use_weights=use_weights, **result)
     upper = result["distance"][np.triu_indices(eligible.size, 1)]
     print(f"median self-distance {np.median(result['self_distance']):.2f} um; "
@@ -171,7 +201,10 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
         ambiguity[kk] = float("nan")
         for column in agreement:
             agreement[column][kk] = {"ami": float("nan"), "ari": float("nan")}
-    chosen_k = k or clustering.most_stable_k(stab)
+    if k:
+        chosen_k, k_selection = k, {"rule": "given on the command line", "chosen": k}
+    else:
+        chosen_k, k_selection = clustering.most_stable_k(stab, ambiguity)
     labels = consensus[chosen_k]
     together = clustering.co_clustering(replicate_labels, chosen_k)
     tree = clustering.build_tree(mean_distance, linkage)
@@ -194,6 +227,7 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
         "depth_weight": depth_weight,
         "depth_share_of_squared_distance": clustering.depth_share(mean_distance, depths, depth_weight),
         "chosen_k": chosen_k,
+        "k_selection": k_selection,
         "cluster_sizes": {("outliers" if c == 0 else str(c)): int(n)
                           for c, n in zip(*np.unique(labels, return_counts=True))},
         "k_reached": reached,
@@ -249,43 +283,46 @@ def load_reference(dataset, trial, side, clouds, k=None, depth_weight=0.0):
     return indices, table[column].to_numpy(dtype=int), k
 
 
-def query_set(dataset, side, query, clouds, reference, min_synapses):
+def query_set(dataset, side, query, clouds, reference, min_synapses, min_border_um=0.0):
     """Clouds and indices of the neurons to assign (never the reference neurons).
 
     ``query="none"`` assigns nobody: Stage D then only calibrates and validates.
+    The border filter applies to queries too: a truncated cloud would be misassigned.
     """
     if query == "none":
         return clouds, np.array([], dtype=int)
     if query == "rest":
-        eligible = np.flatnonzero(clouds.n_synapses >= min_synapses)
+        eligible = eligible_neurons(clouds, min_synapses, min_border_um)
         return clouds, np.setdiff1d(eligible, reference)
     if side != "dendrite":
         raise ValueError("--query all is only available for the dendrite side")
     path = clouds_path(dataset, side, "all")
     if not path.exists():
         raise FileNotFoundError(f"{path} is missing; run the extract stage with --all-cells")
-    all_clouds = Clouds(path)
-    eligible = np.flatnonzero(all_clouds.n_synapses >= min_synapses)
+    all_clouds = Clouds(path, align=clouds.align)
+    eligible = eligible_neurons(all_clouds, min_synapses, min_border_um)
     known = np.isin(all_clouds.cell_ids[eligible], clouds.cell_ids[reference])
     return all_clouds, eligible[~known]
 
 
 def assign_neurons(dataset, trial, side, *, query, n_points, min_synapses, use_weights,
                    seed, n_reps, n_neighbours, template_k_max, template_points, cv_folds,
-                   reject_quantile, depth_weight=0.0, k=None, run_info=None):
+                   reject_quantile, depth_weight=0.0, min_border_um=0.0, align=False, k=None,
+                   run_info=None):
     """Stage D: calibrate both assignment methods on the clustered neurons, then assign the queries.
 
-    ``depth_weight`` must match the Stage C run being assigned to; the kNN
-    distances get the same soma-depth term (the template method has its depth
-    prior instead).
+    ``depth_weight``, ``min_border_um`` and ``align`` must match the Stage B/C
+    run being assigned to; the kNN distances get the same soma-depth term (the
+    template method has its depth prior instead).
     """
     start = time.time()
     n_jobs = allocated_cpus()
-    clouds = Clouds(clouds_path(dataset, side))
+    clouds = Clouds(clouds_path(dataset, side), align=align)
     reference, labels, k = load_reference(dataset, trial, side, clouds, k, depth_weight)
     reference_depths = clouds.meta["soma_y"][reference].astype(float)
     n_clusters = int(labels.max())
-    query_clouds, queries = query_set(dataset, side, query, clouds, reference, min_synapses)
+    query_clouds, queries = query_set(dataset, side, query, clouds, reference, min_synapses,
+                                      min_border_um)
     k_values = list(range(1, template_k_max + 1))
     sampling = dict(n_reps=n_reps, n_points=n_points, use_weights=use_weights, seed=seed,
                     n_jobs=n_jobs)
@@ -343,7 +380,8 @@ def assign_neurons(dataset, trial, side, *, query, n_points, min_synapses, use_w
         json.dump(assign.serialise_templates(templates, selection, labels), handle, indent=2)
     summary = {
         "run": {"dataset": dataset, "trial": trial, "side": side, "query": query,
-                "depth_weight": depth_weight, "n_reps": n_reps, "n_neighbours": n_neighbours,
+                "depth_weight": depth_weight, "min_border_um": min_border_um, "aligned": align,
+                "n_reps": n_reps, "n_neighbours": n_neighbours,
                 "template_k_max": template_k_max, "template_points": template_points,
                 "cv_folds": cv_folds, **(run_info or {})},
         "k": k,

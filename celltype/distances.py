@@ -51,6 +51,33 @@ def w2_points(x, y):
     return float(np.sqrt(cost[rows, cols].mean()))
 
 
+def rotation_min_w2(x, y, n_angles=36):
+    """Smallest W2 over ``n_angles`` rotations of ``y`` about the vertical (dy) axis.
+
+    The reference that canonical alignment (``Clouds(align=True)``) tries to
+    reach cheaply; the grid includes angle 0, so the result never exceeds ``w2_points``.
+    """
+    best = np.inf
+    for angle in np.linspace(0, 2 * np.pi, n_angles, endpoint=False):
+        cos, sin = np.cos(angle), np.sin(angle)
+        rotated = np.column_stack([cos * y[:, 0] + sin * y[:, 2], y[:, 1], -sin * y[:, 0] + cos * y[:, 2]])
+        best = min(best, w2_points(x, rotated))
+    return best
+
+
+def alignment_check(sample, rng, n_pairs=100, n_angles=36):
+    """For random pairs of clouds: W2 as given vs the minimum over in-plane rotations.
+
+    Returns the pairs, the given distances and the rotation minima. A median
+    ratio well above 1 means the in-plane orientation dominates the distance.
+    """
+    pairs = rng.choice(len(sample), size=(n_pairs, 2))
+    pairs = pairs[pairs[:, 0] != pairs[:, 1]]
+    given = np.array([w2_points(sample[i], sample[j]) for i, j in pairs])
+    best = np.array([rotation_min_w2(sample[i], sample[j], n_angles) for i, j in pairs])
+    return pairs, given, best
+
+
 # ---------------------------------------------------------------------------
 # Parallel pairwise matrices
 # ---------------------------------------------------------------------------

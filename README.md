@@ -28,8 +28,24 @@ overwrite each other. Options:
 - `--sides` takes one or both sides (default: both).
 - `--n-neurons K` clusters only K randomly chosen neurons per side (same K neurons in every
   replicate); the remaining proofread neurons are assigned in Stage D (`--query rest`).
+- `--align` rotates every cloud about the soma's vertical axis into a canonical frame before
+  anything else (principal axis of the weighted lateral second moment about the soma on +x,
+  lateral centroid on the positive side). Without it, two neurons of the same type whose
+  arbors point in different horizontal directions are far apart in W2; with it only the
+  anisotropy of the arbor counts. Replicate 0 of the points method prints an "alignment
+  check": the median ratio of W2 to the smallest W2 over 36 in-plane rotations on 100 random
+  pairs (stored in `rep000.npz`). Far above 1 without `--align` means orientation dominates
+  the distance; near 1 with `--align` means the canonical frame recovers the rotation optimum.
+- `--min-border-distance` (um, default 0) excludes neurons whose soma is closer than this to
+  the volume border; their arbors are truncated and form spurious clusters. Median soma
+  distance to the border is about 170 to 200 um, so useful values are 50 to 100 um. The filter
+  applies to Stage D queries as well.
 - `--min-cluster-size` (default 5): clusters with fewer neurons are reported as outliers
   (cluster 0, "out" in figures) and do not count towards k.
+- The reported k (when `--k` is not given) is the largest k whose median per-replicate ARI is
+  within 0.03 of the best and whose PAC is within 0.05 of the lowest PAC among those: on a flat
+  stability curve the extra clusters are real stable splits, so resolution is preferred unless
+  ambiguity rises. The rule and its candidates are recorded under `k_selection` in `summary.json`.
 - `--stages extract distances cluster assign` selects stages; finished outputs are skipped
   unless `--overwrite`, so an interrupted job can just be resubmitted.
 
@@ -135,7 +151,7 @@ dendrites (`--query all`) may be truncated or merged.
 | File | Content |
 |---|---|
 | `neurons.csv` | per neuron: covariates, dataset labels, consensus cluster for every reachable k (0 = outlier), self-distance, nearest-neighbour distance, co-clustering stability |
-| `summary.json` | noise floor, soma-depth weight and share, chosen k, cluster sizes, per-k stability (median, quartiles, per-replicate ARI), PAC, outlier counts, AMI/ARI with dataset labels, per-cluster soma-depth quartiles, confound statistics; only k whose consensus reaches k major clusters are listed (`k_reached`) |
+| `summary.json` | noise floor, soma-depth weight and share, chosen k with the selection rule, cluster sizes, per-k stability (median, quartiles, per-replicate ARI), PAC, outlier counts, AMI/ARI with dataset labels, per-cluster soma-depth quartiles, confound statistics (`dist_border_um` is the soma distance to the volume border); only k whose consensus reaches k major clusters are listed (`k_reached`) |
 | `mean_distance.npy` | replicate-mean distance matrix |
 | `k_curves.png` | per-replicate stability (dots, median, IQR), PAC and AMI with dataset labels vs k |
 | `co_clustering.png` | co-clustering matrix at the chosen k, sorted by consensus cluster |
@@ -169,6 +185,7 @@ sbatch jobs/pipeline.slurm --sides dendrite --n-neurons 3000   # cluster 3k dend
 sbatch jobs/pipeline.slurm --n-neurons 1000 --stages distances cluster   # demo without Stage D
 sbatch jobs/pipeline.slurm --n-neurons 1000 --stages distances cluster --method shared   # same neurons, MW2
 sbatch jobs/pipeline.slurm --n-neurons 1000 --stages cluster --depth-weight 0 0.1 0.25 0.5   # soma-depth scan
+sbatch jobs/pipeline.slurm --sides axon --n-neurons 1000 --align --min-border-distance 50   # canonical orientation
 $PYTHON scripts/compare_trials.py --trial-a n1000_rep10_pt200_... --trial-b n1000_rep10_shared30_a10_...
 sbatch jobs/pipeline.slurm --stages extract --all-cells   # dendrite clouds of every cell (96 GB job)
 sbatch jobs/pipeline.slurm --sides dendrite --n-neurons 3000 --stages assign --query all

@@ -209,11 +209,56 @@ def test_trial_name_encodes_every_parameter():
     assert config.trial_name(**base, method="shared", shared_k=30, shared_alpha=10.0) \
         == "n10_rep2_shared30_a10_min100_weighted_seed1_average_k2-3_mcs5"
     assert config.trial_name(**{**base, "n_neurons": None}).startswith("nall_")
+    assert config.trial_name(**base, align=True, min_border=50.0) \
+        == "n10_rep2_pt200_aligned_min100_border50_weighted_seed1_average_k2-3_mcs5"
     names = {config.trial_name(**{**base, key: value}) for key, value in
              [("n_reps", 3), ("n_points", 100), ("min_synapses", 50), ("use_weights", False),
               ("seed", 2), ("linkage", "complete"), ("k_max", 5), ("min_cluster_size", 2),
-              ("method", "shared")]}
-    assert len(names) == 9 and config.trial_name(**base) not in names
+              ("method", "shared"), ("align", True), ("min_border", 50.0)]}
+    assert len(names) == 11 and config.trial_name(**base) not in names
+
+
+def test_border_filter_uses_um_against_stored_nm(tmp_path):
+    n = 120
+    np.savez(tmp_path / "clouds.npz", cell_ids=np.arange(3), offsets=np.arange(4) * n,
+             dx=np.zeros(3 * n), dy=np.zeros(3 * n), dz=np.zeros(3 * n), weight=np.ones(3 * n),
+             soma_y=np.zeros(3), dist_border=np.array([20_000.0, 200_000.0, 60_000.0]))
+    from celltype import pipeline
+
+    clouds = Clouds(tmp_path / "clouds.npz")
+    assert pipeline.eligible_neurons(clouds, 100).tolist() == [0, 1, 2]
+    assert pipeline.eligible_neurons(clouds, 100, min_border_um=50).tolist() == [1, 2]
+    assert pipeline.eligible_neurons(clouds, 100, min_border_um=100).tolist() == [1]
+    np.savez(tmp_path / "no_border.npz", cell_ids=np.arange(1), offsets=np.array([0, n]),
+             dx=np.zeros(n), dy=np.zeros(n), dz=np.zeros(n), weight=np.ones(n), soma_y=np.zeros(1))
+    with pytest.raises(ValueError):
+        pipeline.eligible_neurons(Clouds(tmp_path / "no_border.npz"), 100, min_border_um=50)
+
+
+def test_aligned_clouds_ignore_in_plane_rotation(tmp_path):
+    """Neuron 2 is neuron 1 rotated by 90 degrees about the soma's vertical axis."""
+    rng = np.random.default_rng(5)
+    n = 300
+    dx, dy, dz = rng.normal(80, 20, n), rng.normal(0, 30, n), rng.normal(0, 20, n)
+    np.savez(tmp_path / "clouds.npz", cell_ids=np.array([1, 2]), offsets=np.array([0, n, 2 * n]),
+             dx=np.concatenate([dx, -dz]), dy=np.concatenate([dy, dy]),
+             dz=np.concatenate([dz, dx]), weight=np.ones(2 * n), soma_y=np.zeros(2))
+    plain = Clouds(tmp_path / "clouds.npz")
+    aligned = Clouds(tmp_path / "clouds.npz", align=True)
+
+    assert distances.w2_points(plain.neuron_points(0), plain.neuron_points(1)) > 50.0
+    assert distances.w2_points(aligned.neuron_points(0), aligned.neuron_points(1)) \
+        == pytest.approx(0.0, abs=1e-6)
+    # Canonical frame: the arbor lies on the +x side; depth is untouched.
+    assert aligned.neuron_points(1)[:, 0].mean() > 50.0
+    assert np.allclose(aligned.neuron_points(1)[:, 1], plain.neuron_points(1)[:, 1])
+    # The rotation search finds the same minimum from the unaligned clouds.
+    assert distances.rotation_min_w2(plain.neuron_points(0), plain.neuron_points(1), n_angles=4) \
+        == pytest.approx(0.0, abs=1e-6)
+    pairs, given, best = distances.alignment_check(
+        np.stack([plain.neuron_points(0), plain.neuron_points(1)]), np.random.default_rng(0),
+        n_pairs=6, n_angles=4)
+    assert pairs.shape[1] == 2 and np.all(best <= given + 1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -244,10 +289,20 @@ def test_cut_major_skips_small_clusters():
 def test_stability_is_nan_when_consensus_misses_k():
     distance = _blobs_with_outlier()
     cuts = clustering.replicate_cuts(np.stack([distance, distance]), "average", [2, 3], 3)
-    consensus, _ = clustering.consensus_clustering(cuts, [2, 3], "average", 3)
+    consensus, ambiguity = clustering.consensus_clustering(cuts, [2, 3], "average", 3)
     stab = clustering.stability(cuts, consensus, [2, 3])
     assert np.all(np.isnan(stab[3])) and np.allclose(stab[2], 1.0)
-    assert clustering.most_stable_k(stab, k_min=3) == 2
+    assert clustering.most_stable_k(stab, ambiguity, k_min=3)[0] == 2
+
+
+def test_most_stable_k_prefers_the_largest_k_within_tolerance():
+    stab = {2: np.full(5, 0.9), 3: np.full(5, 0.80), 4: np.full(5, 0.79), 5: np.full(5, 0.78),
+            6: np.full(5, 0.60), 7: np.full(5, np.nan)}
+    pac = {2: 0.1, 3: 0.20, 4: 0.21, 5: 0.40, 6: 0.2, 7: float("nan")}
+    k, rationale = clustering.most_stable_k(stab, pac)
+    # 3, 4, 5 are within 0.03 of the best ARI; 5 is too ambiguous; the largest of the rest is 4.
+    assert k == 4 and rationale["within_ari_tolerance"] == [3, 4, 5]
+    assert rationale["best_median_ari"] == pytest.approx(0.80)
 
 
 def test_add_depth_term_is_exact_and_identity_at_zero():
