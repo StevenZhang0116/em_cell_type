@@ -5,9 +5,9 @@ One bootstrap replicate draws, for every eligible neuron, two independent
 resamples (A and B) of ``n_points`` synapses, with replacement and with
 probability proportional to the border-compensation weight. Two neurons are
 compared with the exact 2-Wasserstein distance between their resampled clouds
-(3-D offsets or cylindrical ``(r, depth)``, see ``Clouds.neuron_points``).
-With equal-size uniform samples, optimal transport reduces to an assignment
-problem, solved exactly with ``linear_sum_assignment``.
+of soma-centred offsets ``(dx, dy, dz)``. With equal-size uniform samples,
+optimal transport reduces to an assignment problem, solved exactly with
+``linear_sum_assignment``.
 
 Each replicate returns ``D[i, j] = W(A_i, A_j)`` and the self-distance
 ``W(A_i, B_i)``, the resampling noise floor of each neuron.
@@ -25,12 +25,11 @@ from scipy.spatial.distance import cdist
 # Resampling
 # ---------------------------------------------------------------------------
 
-def resample_clouds(clouds, eligible, n_points, coords, use_weights, rng):
-    """Two independent weighted resamples per neuron, each (N, n_points, dim)."""
-    dim = 3 if coords == "xyz" else 2
-    draws = np.empty((2, eligible.size, n_points, dim))
+def resample_clouds(clouds, eligible, n_points, use_weights, rng):
+    """Two independent weighted resamples per neuron, each (N, n_points, 3)."""
+    draws = np.empty((2, eligible.size, n_points, 3))
     for row, index in enumerate(eligible):
-        points = clouds.neuron_points(index, coords).astype(float)
+        points = clouds.neuron_points(index).astype(float)
         prob = None
         if use_weights:
             weight = clouds.neuron_weights(index).astype(float)
@@ -69,7 +68,8 @@ def _points_block(rows, sample):
             for i in rows]
 
 
-def _assemble(n, block_results):
+def assemble_symmetric(n, block_results):
+    """Full symmetric matrix from per-row upper-triangle values."""
     matrix = np.zeros((n, n), dtype=np.float32)
     for block in block_results:
         for i, values in block:
@@ -80,16 +80,16 @@ def _assemble(n, block_results):
 def pairwise_points(sample, n_jobs):
     blocks = balanced_row_blocks(len(sample), 4 * n_jobs)
     results = Parallel(n_jobs=n_jobs)(delayed(_points_block)(b, sample) for b in blocks)
-    return _assemble(len(sample), results)
+    return assemble_symmetric(len(sample), results)
 
 
 # ---------------------------------------------------------------------------
 # One bootstrap replicate
 # ---------------------------------------------------------------------------
 
-def compute_replicate(clouds, eligible, *, coords, n_points, use_weights, rng, n_jobs):
+def compute_replicate(clouds, eligible, *, n_points, use_weights, rng, n_jobs):
     """Distance matrix and self-distances for one replicate."""
-    sample_a, sample_b = resample_clouds(clouds, eligible, n_points, coords, use_weights, rng)
+    sample_a, sample_b = resample_clouds(clouds, eligible, n_points, use_weights, rng)
     return {
         "distance": pairwise_points(sample_a, n_jobs),
         "self_distance": np.array([w2_points(a, b) for a, b in zip(sample_a, sample_b)]),

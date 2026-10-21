@@ -6,11 +6,11 @@
 #SBATCH --mem=96G
 #SBATCH --time=72:00:00
 #SBATCH --output=log/pipeline_%j.txt
-# Whole pipeline (Stage A, then B + C for every combination) in one job.
-# Memory is sized for Stage A; CPUs are used by Stage B.
+# Whole pipeline (Stage A, then B + C + D for every side) in one job.
+# Memory is sized for Stage A; CPUs are used by Stages B and D.
 # Usage: sbatch jobs/pipeline.slurm [run_pipeline.py options]
 #   sbatch jobs/pipeline.slurm --dataset microns
-#   sbatch jobs/pipeline.slurm --coords xyz cylindrical
+#   sbatch jobs/pipeline.slurm --sides dendrite --n-neurons 3000
 # Finished outputs are skipped, so resubmitting continues an interrupted run.
 set -euo pipefail
 source jobs/env.sh

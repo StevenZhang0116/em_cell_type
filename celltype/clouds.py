@@ -6,16 +6,16 @@ outgoing for the axon side (``status_axon == "extended"``), incoming for the
 dendrite side (``full_dendrite``) -- regardless of the partner's cell type.
 This deliberately differs from the "local" GMM fit in mixture_all.py, which
 keeps only synapses onto/from one partner type and would leak the dataset
-labels into the anatomy features.
+labels into the anatomy features. The same functions also extract the
+dendrite clouds of every cell in the table (``--all-cells``), which Stage D
+can assign to the clusters.
 
 Coordinates follow mixture_all.py: ``pt_position_*_trafo`` in nm, converted
 to micrometres; ``pt_position_y_trafo`` is cortical depth and x/z span the
 cortical plane. Each synapse is stored as its soma-centred offset
-``(dx, dy, dz)``. ``Clouds.neuron_points`` returns either these 3-D offsets
-(``coords="xyz"``, the default; keeps the in-plane direction of the arbor) or
-cylindrical ``(r, dy)`` with ``r = hypot(dx, dz)`` (``coords="cylindrical"``;
-invariant to rotation about the soma's vertical axis). Border-compensation weights are ``weights_pre`` / ``weights_post``
-(MICrONS only; ones for V1DD).
+``(dx, dy, dz)``, which ``Clouds.neuron_points`` returns, so the in-plane
+direction of an arbor counts. Border-compensation weights are ``weights_pre``
+/ ``weights_post`` (MICrONS only; ones for V1DD).
 
 Storage: one ``.npz`` per side in CSR form -- flat ``dx``, ``dy``, ``dz``, ``weight``
 arrays plus ``offsets`` so that neuron ``i`` owns ``offsets[i]:offsets[i+1]``.
@@ -69,16 +69,22 @@ def proofread_cells(cells, side):
 
 
 def load_synapses(dataset, axon_ids, dendrite_ids):
-    """Synapses whose presynaptic cell is a proofread axon or whose
-    postsynaptic cell is a proofread dendrite, with autapses removed."""
+    """Synapses whose presynaptic cell is in ``axon_ids`` or whose postsynaptic
+    cell is in ``dendrite_ids`` (either may be empty), with autapses removed."""
     has_weights = DATASETS[dataset]["has_weights"]
     columns = ["pre_pt_root_id", "post_pt_root_id", *_XYZ]
     if has_weights:
         columns += ["weights_pre", "weights_post"]
 
     table = ds.dataset(DATA_DIR / DATASETS[dataset]["synapse_table"], format="ipc")
-    row_filter = (pc.field("pre_pt_root_id").isin(axon_ids)
-                  | pc.field("post_pt_root_id").isin(dendrite_ids))
+    filters = []
+    if len(axon_ids):
+        filters.append(pc.field("pre_pt_root_id").isin(axon_ids))
+    if len(dendrite_ids):
+        filters.append(pc.field("post_pt_root_id").isin(dendrite_ids))
+    if not filters:
+        raise ValueError("no cell ids to select synapses for")
+    row_filter = filters[0] if len(filters) == 1 else filters[0] | filters[1]
     synapses = table.to_table(columns=columns, filter=row_filter).to_pandas()
     synapses = synapses[synapses["pre_pt_root_id"] != synapses["post_pt_root_id"]]
 
@@ -160,20 +166,10 @@ class Clouds:
     def _span(self, index):
         return slice(self.offsets[index], self.offsets[index + 1])
 
-    def neuron_points(self, index, coords):
-        """Soma-relative synapse positions of one neuron in micrometres.
-
-        ``coords="xyz"`` gives (n, 3) ``(dx, dy, dz)``; ``"cylindrical"``
-        gives (n, 2) ``(r, dy)``, where dy is the depth offset from the soma.
-        """
+    def neuron_points(self, index):
+        """Soma-relative synapse positions (n, 3) ``(dx, dy, dz)`` of one neuron, in um."""
         span = self._span(index)
-        depth = self.meta["dy"][span]
-        dx, dz = self.meta["dx"][span], self.meta["dz"][span]
-        if coords == "xyz":
-            return np.column_stack([dx, depth, dz])
-        if coords == "cylindrical":
-            return np.column_stack([np.hypot(dx, dz), depth])
-        raise ValueError(f"unknown coords {coords!r}")
+        return np.column_stack([self.meta["dx"][span], self.meta["dy"][span], self.meta["dz"][span]])
 
     def neuron_weights(self, index):
         return self.meta["weight"][self._span(index)]

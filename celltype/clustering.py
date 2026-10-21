@@ -1,7 +1,7 @@
 """
 Hierarchical Clustering, Stability and Post-Hoc Checks
 ======================================================
-Works on the bootstrap replicates of one (side, coords) run:
+Works on the bootstrap replicates of one side:
 
 1. Noise floor -- each neuron's resampling self-distance vs its distance to
    the nearest other neuron. Self/nearest near 1 only says the nearest

@@ -8,6 +8,12 @@ Figures for the Clustering Stage
   contingency    dataset cell_type x new cluster counts
   covariates     nuisance covariates per new cluster
 Cluster 0 (outliers: neurons left in clusters below the minimum size) is shown as "out".
+
+Stage D figures:
+  cv_confusion   held-out confusion matrix of each assignment method
+  cv_reliability reliability diagram (accuracy vs posterior confidence) per method
+  templates      each cluster's template density (slice through its centre) over member synapses
+  queries        posterior confidence and label counts of the assigned queries
 """
 
 from __future__ import annotations
@@ -19,8 +25,10 @@ import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram
 
+from .assign import METHODS
 from .clustering import present_covariates
 from .config import LABEL_COLUMNS
+from .templates import density_slice
 
 
 def _category_colors(values):
@@ -171,5 +179,114 @@ def plot_covariates(table, labels, path):
         if column == "soma_depth_um":
             ax.invert_yaxis()
     axes[-1].set_xlabel("new cluster")
+    fig.tight_layout()
+    _save(fig, path)
+
+
+# ---------------------------------------------------------------------------
+# Stage D
+# ---------------------------------------------------------------------------
+
+def plot_assign_cv(cv_metrics, prob, truth, path_confusion, path_reliability):
+    """Held-out confusion matrices (counts, shaded by row fraction) and reliability curves."""
+    n_clusters = prob[METHODS[0]].shape[1]
+    fig, axes = plt.subplots(1, len(METHODS), figsize=(1.5 + 3.8 * len(METHODS), 4.2))
+    for ax, method in zip(axes, METHODS):
+        metrics = cv_metrics[method]
+        confusion = np.array(metrics["confusion_rows_true_cols_predicted"])
+        fraction = confusion / np.maximum(confusion.sum(axis=1, keepdims=True), 1)
+        ax.imshow(fraction, cmap="Blues", vmin=0, vmax=1)
+        for (row, col), value in np.ndenumerate(confusion):
+            if value:
+                ax.text(col, row, str(value), ha="center", va="center", fontsize=7,
+                        color="w" if fraction[row, col] > 0.6 else "k")
+        ax.set_xticks(range(n_clusters))
+        ax.set_xticklabels(range(1, n_clusters + 1))
+        ax.set_yticks(range(n_clusters))
+        ax.set_yticklabels(range(1, n_clusters + 1))
+        ax.set_xlabel("assigned cluster")
+        ax.set_ylabel("consensus cluster")
+        ax.set_title(f"{method}: acc {metrics['accuracy']:.2f}, NLL {metrics['nll']:.2f}, "
+                     f"ECE {metrics['ece']:.2f}", fontsize=9)
+    fig.tight_layout()
+    _save(fig, path_confusion)
+
+    keep = truth > 0
+    fig, ax = plt.subplots(figsize=(5, 5))
+    edges = np.linspace(0, 1, 11)
+    for method in METHODS:
+        confidence = prob[method][keep].max(axis=1)
+        correct = (prob[method][keep].argmax(axis=1) + 1) == truth[keep]
+        centres, accuracy = [], []
+        for low, high in zip(edges[:-1], edges[1:]):
+            mask = (confidence >= low) & ((confidence < high) if high < 1 else (confidence <= high))
+            if mask.sum() >= 5:
+                centres.append(confidence[mask].mean())
+                accuracy.append(correct[mask].mean())
+        ax.plot(centres, accuracy, marker="o", label=method)
+    ax.plot([0, 1], [0, 1], color="0.5", ls="--", lw=1)
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.set_xlabel("posterior of the assigned cluster")
+    ax.set_ylabel("fraction correct (held-out references)")
+    ax.set_title("Reliability (bins with >= 5 neurons)")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    _save(fig, path_reliability)
+
+
+def plot_templates(templates, clouds, indices, labels, path, slab=30.0, max_points=4000):
+    """Template density on the (dx, dy) plane through its centre, over member synapses
+    within ``slab`` um of that plane."""
+    clusters = sorted(templates)
+    rng = np.random.default_rng(0)
+    member_points = {}
+    for c in clusters:
+        points = np.concatenate([clouds.neuron_points(i) for i in indices[labels == c]])
+        near = np.abs(points[:, 2] - templates[c].centre[1]) < slab
+        points = points[near]
+        if points.shape[0] > max_points:
+            points = points[rng.choice(points.shape[0], size=max_points, replace=False)]
+        member_points[c] = points
+    pooled = np.concatenate(list(member_points.values()))
+    x_low, x_high = np.percentile(pooled[:, 0], [0.5, 99.5])
+    y_low, y_high = np.percentile(pooled[:, 1], [0.5, 99.5])
+    dx, dy = np.linspace(x_low, x_high, 101), np.linspace(y_low, y_high, 201)
+
+    fig, axes = plt.subplots(1, len(clusters), figsize=(3.4 * len(clusters), 5.5), sharey=True)
+    for ax, c in zip(np.atleast_1d(axes), clusters):
+        ax.contourf(dx, dy, density_slice(templates[c], dx, dy), levels=12, cmap="Blues")
+        ax.scatter(member_points[c][:, 0], member_points[c][:, 1], s=1, color="k", alpha=0.15)
+        ax.set_title(f"cluster {c}: {int(np.sum(labels == c))} neurons, "
+                     f"K={templates[c].n_components}", fontsize=9)
+        ax.set_xlabel("dx (um)")
+    axes = np.atleast_1d(axes)
+    axes[0].set_ylabel("depth offset dy (um)")
+    axes[0].invert_yaxis()
+    fig.tight_layout()
+    _save(fig, path)
+
+
+def plot_queries(prob, hard, path):
+    """Posterior confidence per method and the number of queries per assigned label."""
+    n_clusters = prob[METHODS[0]].shape[1]
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    for method in METHODS:
+        axes[0].hist(prob[method].max(axis=1), bins=np.linspace(0, 1, 21), histtype="step",
+                     label=method)
+    axes[0].set_xlabel("posterior of the assigned cluster")
+    axes[0].set_ylabel("queries")
+    axes[0].legend(fontsize=8)
+
+    values = np.arange(n_clusters + 1)
+    width = 0.8 / len(METHODS)
+    for i, method in enumerate(METHODS):
+        counts = [int(np.sum(hard[method] == v)) for v in values]
+        axes[1].bar(values + (i - (len(METHODS) - 1) / 2) * width, counts, width, label=method)
+    axes[1].set_xticks(values)
+    axes[1].set_xticklabels(["none"] + [str(v) for v in values[1:]])
+    axes[1].set_xlabel("assigned cluster")
+    axes[1].set_ylabel("queries")
+    axes[1].legend(fontsize=8)
     fig.tight_layout()
     _save(fig, path)

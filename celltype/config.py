@@ -5,10 +5,13 @@ Input tables are the ones used by the Stage-1 GMM fit in
 ``../mixture/src/modeling/mixture_all.py``. Stage outputs live under
 ``output/<dataset>/``:
 
-  clouds_<side>.npz                                     (Stage A, shared)
-  trials/<trial>/config.json                            (run parameters)
-  trials/<trial>/dist_<side>_<coords>/rep<b>.npz        (Stage B)
-  trials/<trial>/cluster_<side>_<coords>/...            (Stage C)
+  clouds_<side>.npz                              (Stage A, shared)
+  clouds_dendrite_all.npz                        (Stage A with --all-cells)
+  trials/<trial>/config.json                     (run parameters)
+  trials/<trial>/shared_<side>.npz               (Stage B, --method shared only)
+  trials/<trial>/dist_<side>/rep<b>.npz          (Stage B)
+  trials/<trial>/cluster_<side>/...              (Stage C)
+  trials/<trial>/assign_<side>_<query>/...       (Stage D)
 
 ``<trial>`` is built from the Stage B and C parameters (``trial_name``), so
 runs with different parameters never share or overwrite each other's files.
@@ -27,8 +30,6 @@ OUTPUT_ROOT = PROJECT_ROOT / "output"
 
 NM_TO_UM = 1.0 / 1000.0
 SIDES = ("axon", "dendrite")
-# xyz: soma-centred (dx, dy, dz); cylindrical: (r, dy), invariant to rotation about the soma axis.
-COORDS = ("xyz", "cylindrical")
 
 DATASETS = {
     "microns": {
@@ -55,14 +56,17 @@ def allocated_cpus():
     return int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
 
 
-def run_name(side, coords):
-    return f"{side}_{coords}"
-
-
 def trial_name(*, n_neurons, n_reps, n_points, min_synapses, use_weights, seed,
-               linkage, k_min, k_max, min_cluster_size, k=None):
-    """Readable folder name that encodes every Stage B and C parameter."""
-    parts = [f"n{n_neurons or 'all'}", f"rep{n_reps}", f"pt{n_points}", f"min{min_synapses}",
+               linkage, k_min, k_max, min_cluster_size, k=None,
+               method="points", shared_k=30, shared_alpha=10.0):
+    """Readable folder name that encodes every Stage B and C parameter.
+
+    The third token says how neurons are compared: ``pt<n>`` for the point-cloud
+    W2 on ``n`` resampled synapses, ``shared<K>_a<alpha>`` for MW2 between
+    mixing weights over K shared components with Dirichlet strength alpha.
+    """
+    sampling = f"pt{n_points}" if method == "points" else f"shared{shared_k}_a{shared_alpha:g}"
+    parts = [f"n{n_neurons or 'all'}", f"rep{n_reps}", sampling, f"min{min_synapses}",
              "weighted" if use_weights else "unweighted", f"seed{seed}", linkage,
              f"k{k_min}-{k_max}", f"mcs{min_cluster_size}"]
     if k is not None:
@@ -79,17 +83,28 @@ def dataset_dir(dataset):
     return _ensure(OUTPUT_ROOT / dataset)
 
 
-def clouds_path(dataset, side):
-    return dataset_dir(dataset) / f"clouds_{side}.npz"
+def clouds_path(dataset, side, scope="proofread"):
+    """``scope="all"``: the clouds of every cell in the table, not only proofread ones."""
+    suffix = "" if scope == "proofread" else "_all"
+    return dataset_dir(dataset) / f"clouds_{side}{suffix}.npz"
 
 
 def trial_dir(dataset, trial):
     return _ensure(dataset_dir(dataset) / "trials" / trial)
 
 
-def distance_dir(dataset, trial, side, coords):
-    return _ensure(trial_dir(dataset, trial) / f"dist_{run_name(side, coords)}")
+def shared_model_path(dataset, trial, side):
+    """The fitted shared-component mixture of ``--method shared``."""
+    return trial_dir(dataset, trial) / f"shared_{side}.npz"
 
 
-def cluster_dir(dataset, trial, side, coords):
-    return _ensure(trial_dir(dataset, trial) / f"cluster_{run_name(side, coords)}")
+def distance_dir(dataset, trial, side):
+    return _ensure(trial_dir(dataset, trial) / f"dist_{side}")
+
+
+def cluster_dir(dataset, trial, side):
+    return _ensure(trial_dir(dataset, trial) / f"cluster_{side}")
+
+
+def assign_dir(dataset, trial, side, query):
+    return _ensure(trial_dir(dataset, trial) / f"assign_{side}_{query}")
