@@ -2,24 +2,26 @@
 Run the Whole Pipeline
 ======================
 Stage A (extract clouds), then for every side: Stage B (bootstrap distance
-replicates), Stage C (clustering and checks) and Stage D (assigning the
-neurons that were not clustered). See celltype/pipeline.py for the stages.
+replicates) and Stage C (clustering and checks). Stage D (assigning the
+neurons that were not clustered) is optional and only runs when "assign" is
+listed in --stages. See celltype/pipeline.py for the stages.
 
 Everything except the clouds is written to output/<dataset>/trials/<trial>/,
 where <trial> encodes the Stage B and C parameters (e.g.
-n10_rep2_pt200_min100_weighted_seed20261019_average_k2-3_mcs5), so different
-parameter settings never overwrite each other. Within a trial, finished
-outputs are skipped, so a job that hits its time limit can simply be
-resubmitted; pass --overwrite to recompute everything.
+n10_rep2_pt200-2000_min100_weighted_seed20261019_average_k2-3_mcs5: 200
+resampled synapses per axon, 2000 per dendrite), so different parameter
+settings never overwrite each other. Within a trial, finished outputs are
+skipped, so a job that hits its time limit can simply be resubmitted; pass
+--overwrite to recompute everything.
 
 Example::
 
     python -u scripts/run_pipeline.py --dataset microns
     python -u scripts/run_pipeline.py --sides axon
-    python -u scripts/run_pipeline.py --n-neurons 50 --n-reps 2   # quick test
-    python -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --query rest
+    python -u scripts/run_pipeline.py --n-neurons 50 --n-reps 2 --n-points 50   # quick test
+    python -u scripts/run_pipeline.py --n-neurons 1000 --n-points 200 500   # axon 200, dendrite 500
+    python -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --stages assign --query rest
     python -u scripts/run_pipeline.py --n-neurons 1000 --method shared --stages distances cluster
-    python -u scripts/run_pipeline.py --n-neurons 1000 --stages cluster --depth-weight 0 0.1 0.5
     python -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --align --min-border-distance 50
 """
 
@@ -35,18 +37,21 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from celltype import pipeline
 from celltype.clouds import Clouds
-from celltype.config import (DATASETS, SIDES, assign_dir, cluster_dir, clouds_path, distance_dir,
-                             trial_dir, trial_name)
+from celltype.config import (DATASETS, DEFAULT_N_POINTS, SIDES, assign_dir, cluster_dir, clouds_path,
+                             distance_dir, points_per_side, trial_dir, trial_name)
 
 
 STAGES = ("extract", "distances", "cluster", "assign")
+DEFAULT_STAGES = ("extract", "distances", "cluster")   # Stage D only on request
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", choices=sorted(DATASETS), default="microns")
-    parser.add_argument("--stages", nargs="+", choices=STAGES, default=list(STAGES))
+    parser.add_argument("--stages", nargs="+", choices=STAGES, default=list(DEFAULT_STAGES),
+                        help="stages to run (default: extract distances cluster); Stage D runs "
+                             "only when 'assign' is listed")
     parser.add_argument("--sides", nargs="+", choices=SIDES, default=list(SIDES))
     parser.add_argument("--overwrite", action="store_true",
                         help="recompute outputs that already exist")
@@ -61,8 +66,11 @@ def main():
                         help="points: W2 between resampled synapse clouds; shared: MW2 between "
                              "mixing weights over one shared Gaussian mixture per side")
     parser.add_argument("--n-reps", type=int, default=10, help="bootstrap replicates")
-    parser.add_argument("--n-points", type=int, default=200,
-                        help="[points] synapses resampled per neuron per replicate")
+    parser.add_argument("--n-points", nargs="+", type=int, default=None,
+                        help="[points] synapses resampled per neuron per replicate: one value for "
+                             "every side, or one per side in the order axon, dendrite (default: "
+                             + ", ".join(f"{s} {n}" for s, n in DEFAULT_N_POINTS.items())
+                             + "; the exact W2 per pair costs about n^3, see README)")
     parser.add_argument("--shared-k", type=int, default=30,
                         help="[shared] components of the shared mixture")
     parser.add_argument("--shared-alpha", type=float, default=10.0,
@@ -94,10 +102,6 @@ def main():
                              "and do not count towards k")
     parser.add_argument("--k", type=int, default=None,
                         help="k for the detailed figures and for Stage D (default: most stable k >= 3)")
-    parser.add_argument("--depth-weight", nargs="+", type=float, default=[0.0],
-                        help="lambda in D'^2 = W2^2 + lambda * (soma depth difference in um)^2; "
-                             "0 ignores soma depth. Several values run Stages C and D once per "
-                             "value (cluster_<side>_dw<lambda>) on the same distance files")
     # Stage D
     parser.add_argument("--query", choices=("rest", "all", "none"), default="rest",
                         help="neurons to assign: the proofread neurons not clustered (rest), "
@@ -116,6 +120,12 @@ def main():
                         help="queries beyond this quantile of held-out reference distances "
                              "(or below 1 - it in template score) get label 0")
     args = parser.parse_args()
+    if args.n_points is None or len(args.n_points) == 1:
+        n_points = points_per_side(None if args.n_points is None else args.n_points[0])
+    elif len(args.n_points) == len(SIDES):
+        n_points = dict(zip(SIDES, args.n_points))
+    else:
+        parser.error(f"--n-points takes one value or one per side ({', '.join(SIDES)})")
     start = time.time()
 
     if "extract" in args.stages:
@@ -132,7 +142,7 @@ def main():
                 pipeline.extract_all_dendrites(args.dataset, args.lateral_cutoff)
 
     params = {"method": args.method, "n_neurons": args.n_neurons, "n_reps": args.n_reps,
-              "n_points": args.n_points, "shared_k": args.shared_k, "shared_alpha": args.shared_alpha,
+              "n_points": n_points, "shared_k": args.shared_k, "shared_alpha": args.shared_alpha,
               "align": args.align, "min_synapses": args.min_synapses,
               "min_border": args.min_border_distance, "use_weights": not args.no_weights,
               "seed": args.seed, "linkage": args.linkage, "k_min": args.k_min,
@@ -161,43 +171,39 @@ def main():
                 print(f"== Stage B: {side} | replicate {rep}")
                 pipeline.compute_distances(
                     clouds, args.dataset, trial, side, rep,
-                    n_points=args.n_points, min_synapses=args.min_synapses,
+                    n_points=n_points[side], min_synapses=args.min_synapses,
                     use_weights=not args.no_weights, seed=args.seed,
                     n_neurons=args.n_neurons, min_border_um=args.min_border_distance,
                     method=args.method, shared_model=shared_model, shared_alpha=args.shared_alpha)
                 fresh = True
 
-        reclustered = set()   # depth weights whose Stage C was recomputed in this run
+        reclustered = False   # Stage C recomputed in this run
         if "cluster" in args.stages:
-            for weight in args.depth_weight:
-                tag = f"{side} | depth weight {weight:g}"
-                summary = cluster_dir(args.dataset, trial, side, weight) / "summary.json"
-                if summary.exists() and not (fresh or args.overwrite):
-                    print(f"== Stage C: {tag} already clustered")
-                    continue
-                print(f"== Stage C: {tag}")
+            summary = cluster_dir(args.dataset, trial, side) / "summary.json"
+            if summary.exists() and not (fresh or args.overwrite):
+                print(f"== Stage C: {side} already clustered")
+            else:
+                print(f"== Stage C: {side}")
                 pipeline.cluster_neurons(
                     args.dataset, trial, side, linkage=args.linkage,
                     k_values=list(range(args.k_min, args.k_max + 1)),
-                    min_cluster_size=args.min_cluster_size, depth_weight=weight, k=args.k,
-                    run_info=params)
-                reclustered.add(weight)
+                    min_cluster_size=args.min_cluster_size, k=args.k, run_info=params)
+                reclustered = True
 
         if "assign" in args.stages:
-            for weight in args.depth_weight:
-                tag = f"{side} | depth weight {weight:g} | query {args.query}"
-                summary = assign_dir(args.dataset, trial, side, args.query, weight) / "summary.json"
-                if summary.exists() and not (fresh or weight in reclustered or args.overwrite):
-                    print(f"== Stage D: {tag} already assigned")
-                    continue
+            tag = f"{side} | query {args.query}"
+            summary = assign_dir(args.dataset, trial, side, args.query) / "summary.json"
+            if summary.exists() and not (fresh or reclustered or args.overwrite):
+                print(f"== Stage D: {tag} already assigned")
+            else:
                 print(f"== Stage D: {tag}")
                 pipeline.assign_neurons(
                     args.dataset, trial, side, query=args.query,
-                    n_points=args.n_points, min_synapses=args.min_synapses,
+                    n_points=n_points[side], min_synapses=args.min_synapses,
                     use_weights=not args.no_weights, seed=args.seed, n_reps=args.assign_reps,
                     n_neighbours=args.knn, template_k_max=args.template_k_max,
                     template_points=args.template_points, cv_folds=args.cv_folds,
-                    reject_quantile=args.reject_quantile, depth_weight=weight,
+                    reject_quantile=args.reject_quantile,
                     min_border_um=args.min_border_distance, align=args.align, k=args.k,
                     run_info=params)
         print(f"   elapsed {(time.time() - start) / 3600:.2f} h")

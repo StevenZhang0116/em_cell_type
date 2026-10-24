@@ -164,8 +164,8 @@ def plot_contingency(table, labels, path):
     _save(fig, path)
 
 
-def plot_covariates(table, labels, path, note=None):
-    """Covariates per cluster; ``note`` (e.g. the soma-depth term's share) goes on the depth panel."""
+def plot_covariates(table, labels, path):
+    """Covariates per cluster."""
     columns = present_covariates(table)
     clusters = np.unique(labels)
     fig, axes = plt.subplots(len(columns), 1, sharex=True,
@@ -179,8 +179,6 @@ def plot_covariates(table, labels, path, note=None):
             ax.set_yscale("log")
         if column == "soma_depth_um":
             ax.invert_yaxis()
-            if note:
-                ax.text(0.01, 0.02, note, transform=ax.transAxes, fontsize=8, va="bottom")
     axes[-1].set_xlabel("new cluster")
     fig.tight_layout()
     _save(fig, path)

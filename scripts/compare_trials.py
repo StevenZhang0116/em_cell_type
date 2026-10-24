@@ -3,19 +3,18 @@ Compare Two Clusterings
 =======================
 Side by side comparison of two Stage C runs on the same neurons: two trials
 with different Stage B settings (typically ``--method points`` vs ``--method
-shared``; same ``--n-neurons`` and ``--seed`` give the same neurons), or one
-trial with two soma-depth weights. Prints, per side: correlation of the two
-mean distance matrices, self/nearest-neighbour ratio, chosen k with its
-stability and PAC, depth share and per-cluster depth overlap, AMI with
-cell_type, and the ARI between the two consensus labelings. Saves a scatter
-of the two distance matrices.
+shared``, or with and without ``--align``; same ``--n-neurons`` and ``--seed``
+give the same neurons). Prints, per side: correlation of the two mean distance
+matrices, self/nearest-neighbour ratio, chosen k with its stability and PAC,
+AMI with cell_type, and the ARI between the two consensus labelings. Saves a
+scatter of the two distance matrices. Outputs are labelled by the trial-name
+tokens in which the two trials differ.
 
-Examples::
+Example::
 
     python scripts/compare_trials.py --sides axon \\
         --trial-a n1000_rep10_pt200_min100_weighted_seed20261019_average_k2-20_mcs5 \\
         --trial-b n1000_rep10_shared30_a10_min100_weighted_seed20261019_average_k2-20_mcs5
-    python scripts/compare_trials.py --trial-a n1000_rep10_pt200_... --dw-a 0 --dw-b 0.25
 """
 
 from __future__ import annotations
@@ -38,8 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from celltype.config import SIDES, cluster_dir, dataset_dir
 
 
-def load_clustering(dataset, trial, side, depth_weight):
-    outdir = cluster_dir(dataset, trial, side, depth_weight)
+def load_clustering(dataset, trial, side):
+    outdir = cluster_dir(dataset, trial, side)
     with open(outdir / "summary.json") as handle:
         summary = json.load(handle)
     table = pd.read_csv(outdir / "neurons.csv")
@@ -48,19 +47,23 @@ def load_clustering(dataset, trial, side, depth_weight):
 
 def describe(summary):
     k = str(summary["chosen_k"])
-    depth = summary.get("cluster_soma_depth", {})
     return {
         "n_neurons": summary["n_neurons"],
         "self_over_nearest": round(summary["noise"]["median_self_over_nearest"], 3),
-        "depth_weight": summary.get("depth_weight", 0.0),
-        "depth_share_of_squared_distance": round(summary.get("depth_share_of_squared_distance", 0.0), 3),
         "chosen_k": summary["chosen_k"],
         "stability_ari_median": round(summary["stability_ari"][k]["median"], 3),
         "pac": round(summary["pac"][k], 3),
         "ami_cell_type": round(summary["label_agreement"]["cell_type"][k]["ami"], 3),
         "outliers": summary["n_outliers"][k],
-        "cluster_pairs_with_overlapping_depth_iqr": depth.get("fraction_of_cluster_pairs_with_overlapping_iqr"),
     }
+
+
+def trial_tokens(trial_a, trial_b):
+    """Short labels for the two trials: the name tokens each has and the other lacks."""
+    parts_a, parts_b = trial_a.split("_"), trial_b.split("_")
+    only_a = "_".join(p for p in parts_a if p not in parts_b) or "base"
+    only_b = "_".join(p for p in parts_b if p not in parts_a) or "base"
+    return only_a, only_b
 
 
 def main():
@@ -68,22 +71,18 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", default="microns")
     parser.add_argument("--trial-a", required=True)
-    parser.add_argument("--trial-b", default=None, help="default: the same trial as --trial-a")
-    parser.add_argument("--dw-a", type=float, default=0.0, help="soma-depth weight of run A")
-    parser.add_argument("--dw-b", type=float, default=0.0, help="soma-depth weight of run B")
+    parser.add_argument("--trial-b", required=True)
     parser.add_argument("--sides", nargs="+", choices=SIDES, default=list(SIDES))
     args = parser.parse_args()
-    trial_b = args.trial_b or args.trial_a
-    if trial_b == args.trial_a and args.dw_a == args.dw_b:
-        parser.error("the two runs are identical; give --trial-b or different --dw-a / --dw-b")
+    if args.trial_b == args.trial_a:
+        parser.error("the two trials are identical")
     outdir = dataset_dir(args.dataset) / "comparisons"
     outdir.mkdir(exist_ok=True)
-    token_a = f"{args.trial_a.split('_')[2]}_dw{args.dw_a:g}"
-    token_b = f"{trial_b.split('_')[2]}_dw{args.dw_b:g}"
+    token_a, token_b = trial_tokens(args.trial_a, args.trial_b)
 
     for side in args.sides:
-        summary_a, table_a, dist_a = load_clustering(args.dataset, args.trial_a, side, args.dw_a)
-        summary_b, table_b, dist_b = load_clustering(args.dataset, trial_b, side, args.dw_b)
+        summary_a, table_a, dist_a = load_clustering(args.dataset, args.trial_a, side)
+        summary_b, table_b, dist_b = load_clustering(args.dataset, args.trial_b, side)
         common, rows_a, rows_b = np.intersect1d(table_a["pt_root_id"], table_b["pt_root_id"],
                                                return_indices=True)
         if common.size < len(table_a) or common.size < len(table_b):

@@ -28,10 +28,6 @@ template  The synapses of each cluster's members are pooled (soma-centred)
           ``1 - reject_quantile`` quantile of held-out own-cluster scores
           gets label 0.
 
-When Stage C used a soma-depth weight, the pipeline adds the same
-``lambda * (depth difference)^2`` term to every kNN distance before it
-reaches the functions below, so the two stages measure the same thing.
-
 Calibration and validation come from the same cross-validation of the
 reference set: each fold is held out, the kNN pool is restricted to and the
 templates and depth prior are refitted on the other folds, and the held-out

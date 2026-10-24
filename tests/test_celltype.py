@@ -211,6 +211,15 @@ def test_trial_name_encodes_every_parameter():
     assert config.trial_name(**{**base, "n_neurons": None}).startswith("nall_")
     assert config.trial_name(**base, align=True, min_border=50.0) \
         == "n10_rep2_pt200_aligned_min100_border50_weighted_seed1_average_k2-3_mcs5"
+    # Per-side point counts: one token when equal, axon-dendrite otherwise.
+    assert config.points_per_side(None) == config.DEFAULT_N_POINTS == {"axon": 200, "dendrite": 2000}
+    assert config.points_per_side(50) == {"axon": 50, "dendrite": 50}
+    assert config.trial_name(**{**base, "n_points": None}) \
+        == "n10_rep2_pt200-2000_min100_weighted_seed1_average_k2-3_mcs5"
+    assert config.trial_name(**{**base, "n_points": {"axon": 200, "dendrite": 500}}).split("_")[2] \
+        == "pt200-500"
+    assert config.trial_name(**{**base, "n_points": {"axon": 300, "dendrite": 300}}).split("_")[2] \
+        == "pt300"
     names = {config.trial_name(**{**base, key: value}) for key, value in
              [("n_reps", 3), ("n_points", 100), ("min_synapses", 50), ("use_weights", False),
               ("seed", 2), ("linkage", "complete"), ("k_max", 5), ("min_cluster_size", 2),
@@ -303,61 +312,6 @@ def test_most_stable_k_prefers_the_largest_k_within_tolerance():
     # 3, 4, 5 are within 0.03 of the best ARI; 5 is too ambiguous; the largest of the rest is 4.
     assert k == 4 and rationale["within_ari_tolerance"] == [3, 4, 5]
     assert rationale["best_median_ari"] == pytest.approx(0.80)
-
-
-def test_add_depth_term_is_exact_and_identity_at_zero():
-    distance = np.array([[0.0, 3.0], [3.0, 0.0]])
-    depths = np.array([0.0, 4.0])
-    assert clustering.add_depth_term(distance, depths, depths, 0.0) is distance
-    assert np.allclose(clustering.add_depth_term(distance, depths, depths, 1.0), [[0, 5], [5, 0]])
-    stacked = clustering.add_depth_term(np.stack([distance, distance]), depths, depths, 0.25)
-    assert stacked.shape == (2, 2, 2) and stacked[1, 0, 1] == pytest.approx(np.sqrt(9 + 4))
-    # Query x reference matrix with its own depth vectors.
-    query = clustering.add_depth_term(np.array([[1.0, 1.0]]), [10.0], depths, 1.0)
-    assert np.allclose(query, [[np.sqrt(101), np.sqrt(37)]])
-    assert clustering.depth_share(np.array([[0.0, 5.0], [5.0, 0.0]]), depths, 1.0) == pytest.approx(16 / 25)
-    summary = clustering.cluster_depth_summary([100, 110, 120, 500, 510, 520], np.array([1, 1, 1, 2, 2, 2]))
-    assert summary["fraction_of_cluster_pairs_with_overlapping_iqr"] == 0.0
-    assert summary["quartiles_um"][1][1] == 110.0
-
-
-def _same_shape_clouds(tmp_path, monkeypatch):
-    """Six neurons with the same arbor shape: three shallow somata, three deep."""
-    from celltype import config
-
-    monkeypatch.setattr(config, "OUTPUT_ROOT", tmp_path)
-    rng = np.random.default_rng(9)
-    n = 150
-    groups = np.array(["shallow"] * 3 + ["deep"] * 3)
-    np.savez(config.clouds_path("toy", "axon"), cell_ids=np.arange(6), offsets=np.arange(7) * n,
-             dx=rng.normal(0, 15, 6 * n), dy=rng.normal(50, 15, 6 * n), dz=rng.normal(0, 15, 6 * n),
-             weight=np.ones(6 * n), soma_y=np.array([100.0, 110.0, 120.0, 500.0, 510.0, 520.0]),
-             **{f"label_{column}": groups for column in config.LABEL_COLUMNS})
-    return Clouds(config.clouds_path("toy", "axon"))
-
-
-def test_depth_weight_separates_same_shape_groups(tmp_path, monkeypatch):
-    """Identical arbors at two soma depths: only the depth term can tell them apart."""
-    from sklearn.metrics import adjusted_rand_score
-
-    from celltype import config, pipeline
-
-    clouds = _same_shape_clouds(tmp_path, monkeypatch)
-    for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "d", "axon", rep, n_points=40, min_synapses=100,
-                                   use_weights=True, seed=0)
-    pipeline.cluster_neurons("toy", "d", "axon", linkage="average", k_values=[2], min_cluster_size=2,
-                             depth_weight=1.0, k=2)
-    outdir = config.cluster_dir("toy", "d", "axon", 1.0)
-    assert outdir.name == "cluster_axon_dw1"
-    table = pd.read_csv(outdir / "neurons.csv")
-    assert adjusted_rand_score(table["cell_type"], table["cluster_k2"]) == pytest.approx(1.0)
-    with open(outdir / "summary.json") as handle:
-        summary = json.load(handle)
-    assert summary["depth_weight"] == 1.0 and summary["depth_share_of_squared_distance"] > 0.9
-    assert summary["cluster_soma_depth"]["fraction_of_cluster_pairs_with_overlapping_iqr"] == 0.0
-    # The default directory (weight 0) is untouched by the weighted run.
-    assert not (config.cluster_dir("toy", "d", "axon") / "summary.json").exists()
 
 
 def test_consensus_and_stability_on_agreeing_replicates():

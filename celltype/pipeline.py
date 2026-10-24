@@ -9,7 +9,7 @@ stage's files from ``output/<dataset>/`` and writes its own:
   B  fit_shared_model       trials/<trial>/shared_<side>.npz (--method shared only)
      compute_distances      trials/<trial>/dist_<side>/rep<b>.npz
   C  cluster_neurons        trials/<trial>/cluster_<side>/
-  D  assign_neurons         trials/<trial>/assign_<side>_<query>/
+  D  assign_neurons         trials/<trial>/assign_<side>_<query>/ (optional: --stages ... assign)
 """
 
 from __future__ import annotations
@@ -174,19 +174,11 @@ def compute_distances(clouds, dataset, trial, side, rep, *, n_points, min_synaps
 
 
 def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size,
-                    depth_weight=0.0, k=None, run_info=None):
-    """Stage C: consensus clustering over replicates; write tables and figures.
-
-    ``depth_weight`` (lambda) adds the soma depth as an extra coordinate:
-    ``D'^2 = D^2 + lambda * (depth_i - depth_j)^2``, exact for W2 and applied
-    to the stored replicates, so Stage B is not rerun.
-    """
+                    k=None, run_info=None):
+    """Stage C: consensus clustering over replicates; write tables and figures."""
     matrices, self_distances, eligible = clustering.load_replicates(distance_dir(dataset, trial, side))
-    print(f"Loaded {matrices.shape[0]} replicates over {eligible.size} neurons; "
-          f"depth weight {depth_weight:g}")
+    print(f"Loaded {matrices.shape[0]} replicates over {eligible.size} neurons")
     table = clustering.neuron_table(Clouds(clouds_path(dataset, side)), eligible)
-    depths = table["soma_depth_um"].to_numpy(dtype=float)
-    matrices = clustering.add_depth_term(matrices, depths, depths, depth_weight)
     mean_distance = matrices.mean(axis=0)
 
     nearest, self_mean, noise = clustering.noise_summary(mean_distance, self_distances)
@@ -209,7 +201,7 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
     together = clustering.co_clustering(replicate_labels, chosen_k)
     tree = clustering.build_tree(mean_distance, linkage)
 
-    outdir = cluster_dir(dataset, trial, side, depth_weight)
+    outdir = cluster_dir(dataset, trial, side)
     for kk in reached:
         table[f"cluster_k{kk}"] = consensus[kk]
     table["self_distance_um"] = self_mean
@@ -220,12 +212,10 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
 
     summary = {
         "run": {"dataset": dataset, "trial": trial, "side": side, "linkage": linkage,
-                "depth_weight": depth_weight, **(run_info or {})},
+                **(run_info or {})},
         "n_neurons": int(eligible.size),
         "n_replicates": int(matrices.shape[0]),
         "noise": noise,
-        "depth_weight": depth_weight,
-        "depth_share_of_squared_distance": clustering.depth_share(mean_distance, depths, depth_weight),
         "chosen_k": chosen_k,
         "k_selection": k_selection,
         "cluster_sizes": {("outliers" if c == 0 else str(c)): int(n)
@@ -236,15 +226,13 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
         "pac": {str(kk): ambiguity[kk] for kk in reached},
         "label_agreement": {column: {str(kk): per_k[kk] for kk in reached}
                             for column, per_k in agreement.items()},
-        "cluster_soma_depth": clustering.cluster_depth_summary(depths, labels),
         "distance_vs_covariate_spearman": clustering.covariate_distance_correlation(mean_distance, table),
         "covariate_kruskal": clustering.covariate_tests(table, labels),
     }
     with open(outdir / "summary.json", "w") as handle:
         json.dump(summary, handle, indent=2)
 
-    title = (f"{dataset} {side} | {linkage} | min cluster {min_cluster_size} | "
-             f"depth weight {depth_weight:g}")
+    title = f"{dataset} {side} | {linkage} | min cluster {min_cluster_size}"
     plotting.plot_tree_heatmap(tree, mean_distance, table, labels, chosen_k,
                                outdir / "tree_heatmap.png", title)
     plotting.plot_k_curves(stab, ambiguity, agreement, chosen_k, outdir / "k_curves.png")
@@ -252,14 +240,10 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
                                 outdir / "co_clustering.png")
     plotting.plot_noise(nearest, self_mean, outdir / "noise_floor.png")
     plotting.plot_contingency(table, labels, outdir / "contingency.png")
-    note = (f"depth weight {depth_weight:g}: depth term is "
-            f"{100 * summary['depth_share_of_squared_distance']:.0f}% of the squared distance (median pair)"
-            if depth_weight else None)
-    plotting.plot_covariates(table, labels, outdir / "covariates.png", note=note)
+    plotting.plot_covariates(table, labels, outdir / "covariates.png")
 
     print(json.dumps({key: summary[key] for key in
-                      ("n_neurons", "noise", "depth_weight", "depth_share_of_squared_distance",
-                       "chosen_k", "cluster_sizes", "cluster_soma_depth",
+                      ("n_neurons", "noise", "chosen_k", "cluster_sizes",
                        "distance_vs_covariate_spearman")}, indent=2))
     print(f"Outputs in {outdir}")
 
@@ -268,9 +252,9 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
 # Stage D
 # ---------------------------------------------------------------------------
 
-def load_reference(dataset, trial, side, clouds, k=None, depth_weight=0.0):
+def load_reference(dataset, trial, side, clouds, k=None):
     """Clustered neurons (indices into ``clouds``) and their consensus labels at k."""
-    outdir = cluster_dir(dataset, trial, side, depth_weight)
+    outdir = cluster_dir(dataset, trial, side)
     with open(outdir / "summary.json") as handle:
         summary = json.load(handle)
     k = int(k or summary["chosen_k"])
@@ -307,19 +291,15 @@ def query_set(dataset, side, query, clouds, reference, min_synapses, min_border_
 
 def assign_neurons(dataset, trial, side, *, query, n_points, min_synapses, use_weights,
                    seed, n_reps, n_neighbours, template_k_max, template_points, cv_folds,
-                   reject_quantile, depth_weight=0.0, min_border_um=0.0, align=False, k=None,
-                   run_info=None):
+                   reject_quantile, min_border_um=0.0, align=False, k=None, run_info=None):
     """Stage D: calibrate both assignment methods on the clustered neurons, then assign the queries.
 
-    ``depth_weight``, ``min_border_um`` and ``align`` must match the Stage B/C
-    run being assigned to; the kNN distances get the same soma-depth term (the
-    template method has its depth prior instead).
+    ``min_border_um`` and ``align`` must match the Stage B/C run being assigned to.
     """
     start = time.time()
     n_jobs = allocated_cpus()
     clouds = Clouds(clouds_path(dataset, side), align=align)
-    reference, labels, k = load_reference(dataset, trial, side, clouds, k, depth_weight)
-    reference_depths = clouds.meta["soma_y"][reference].astype(float)
+    reference, labels, k = load_reference(dataset, trial, side, clouds, k)
     n_clusters = int(labels.max())
     query_clouds, queries = query_set(dataset, side, query, clouds, reference, min_synapses,
                                       min_border_um)
@@ -330,11 +310,10 @@ def assign_neurons(dataset, trial, side, *, query, n_points, min_synapses, use_w
                       n_jobs=n_jobs)
     print(f"[{side}] {reference.size} reference neurons in {n_clusters} clusters (k={k}, "
           f"{int(np.sum(labels == 0))} outliers); {queries.size} query neurons ({query}); "
-          f"depth weight {depth_weight:g}; {n_jobs} CPUs")
+          f"{n_jobs} CPUs")
 
     # 1. Cross-validation on the reference set: calibration and held-out metrics.
-    distances = clustering.add_depth_term(assign.reference_distances(clouds, reference, **sampling),
-                                          reference_depths, reference_depths, depth_weight)
+    distances = assign.reference_distances(clouds, reference, **sampling)
     print(f"reference distances done ({time.time() - start:.0f}s)")
     cv = assign.cross_validate(clouds, reference, labels, n_clusters, distances, n_folds=cv_folds,
                                n_neighbours=n_neighbours, seed=seed, **templating)
@@ -350,14 +329,11 @@ def assign_neurons(dataset, trial, side, *, query, n_points, min_synapses, use_w
     prior = assign.DepthPrior(clouds.meta["soma_y"][reference], labels, n_clusters)
 
     # 3. Queries.
-    outdir = assign_dir(dataset, trial, side, query, depth_weight)
+    outdir = assign_dir(dataset, trial, side, query)
     queries_summary = None
     if queries.size:
         pool = reference[labels > 0]
-        q_distances = clustering.add_depth_term(
-            assign.query_reference_distances(query_clouds, queries, clouds, pool, **sampling),
-            query_clouds.meta["soma_y"][queries].astype(float), reference_depths[labels > 0],
-            depth_weight)
+        q_distances = assign.query_reference_distances(query_clouds, queries, clouds, pool, **sampling)
         knn_distance, knn_label = assign.nearest_references(q_distances, labels[labels > 0], n_neighbours)
         score = assign.template_scores(query_clouds, queries, templates, use_weights)
         log_prior = prior.log_prior(query_clouds.meta["soma_y"][queries])
@@ -380,7 +356,7 @@ def assign_neurons(dataset, trial, side, *, query, n_points, min_synapses, use_w
         json.dump(assign.serialise_templates(templates, selection, labels), handle, indent=2)
     summary = {
         "run": {"dataset": dataset, "trial": trial, "side": side, "query": query,
-                "depth_weight": depth_weight, "min_border_um": min_border_um, "aligned": align,
+                "min_border_um": min_border_um, "aligned": align,
                 "n_reps": n_reps, "n_neighbours": n_neighbours,
                 "template_k_max": template_k_max, "template_points": template_points,
                 "cv_folds": cv_folds, **(run_info or {})},
