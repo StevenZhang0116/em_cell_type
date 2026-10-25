@@ -3,7 +3,7 @@
 `scripts/analyze_split_half.py` reads Stage-A clouds and measures how much a neuron's
 spatial synapse distribution changes when it is represented by two disjoint subsets.
 It is an optional analysis beside Stages B-D, implemented in `celltype/split_half.py`;
-it does not require a clustering trial or the per-neuron GMM fits.
+it does not require a clustering run or the per-neuron GMM fits.
 
 ## Sampling and distances
 
@@ -57,12 +57,11 @@ result does not depend on the CPU count.
 
 ## Outputs
 
-Files live in `output/<dataset>/split_half/<run>/<side>/`. The readable run name
-includes m, repetitions and requested neuron count, plus a digest of **all**
-analysis options and a SHA-256 fingerprint of the input NPZ. Different source
-clouds or settings therefore get separate directories. Completed runs are skipped;
-`--overwrite` recomputes that run. An incomplete run is recomputed as a whole, not
-resumed by repetition. `summary.json` is written last as the completion marker.
+Files live in `output/<dataset>/split_half/<side>/`. `config.json` records every option and
+a SHA-256 fingerprint of the input NPZ; a later call with other options or regenerated
+clouds recomputes the run and overwrites these files. A completed run with the same options
+is skipped unless `--overwrite`; an incomplete one is recomputed as a whole, not resumed by
+repetition. `summary.json` is written last as the completion marker.
 
 | File | Content |
 |---|---|

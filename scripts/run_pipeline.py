@@ -8,13 +8,12 @@ only runs when "assign" is listed in --stages. An optional "validate" stage runs
 the disjoint split-half consensus validation before Stage B; see
 docs/split_cluster.md.
 
-Everything except the clouds is written to output/<dataset>/trials/<trial>/,
-where <trial> encodes the Stage B and C parameters (e.g.
-n10_rep2_full_min100_weighted_seed20261019_average_k2-3_mcs5: 10 neurons,
-2 bootstrap replicates, complete clouds), so different parameter settings
-never overwrite each other. Within a trial, finished outputs are
-skipped, so a job that hits its time limit can simply be resubmitted; pass
---overwrite to recompute everything.
+Everything except the clouds is written to output/<dataset>/trials/, one set
+of outputs per dataset; its config.json records the Stage B and C parameters
+of the last run. A run with other parameters recomputes the stages it runs
+and overwrites the previous files. With the same parameters, finished outputs
+are skipped (so a job that hits its time limit can simply be resubmitted)
+unless --overwrite.
 
 Example::
 
@@ -31,7 +30,6 @@ Example::
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
 import sys
 import time
@@ -40,8 +38,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from celltype import pipeline
 from celltype.clouds import Clouds
-from celltype.config import (DATASETS, SIDES, assign_dir, cluster_dir, clouds_path, distance_dir,
-                             trial_dir, trial_name)
+from celltype.config import DATASETS, SIDES, assign_dir, cluster_dir, clouds_path, distance_dir
 
 
 STAGES = ("extract", "validate", "distances", "cluster", "assign")
@@ -57,7 +54,8 @@ def main(argv=None):
                              "run only when explicitly listed; execution follows the stage order")
     parser.add_argument("--sides", nargs="+", choices=SIDES, default=list(SIDES))
     parser.add_argument("--overwrite", action="store_true",
-                        help="recompute outputs that already exist")
+                        help="recompute outputs that already exist (implied when the Stage B/C "
+                             "parameters differ from those of the previous run)")
     # Stage A
     parser.add_argument("--lateral-cutoff", type=float, default=250.0,
                         help="max lateral synapse-to-soma distance in um")
@@ -161,10 +159,11 @@ def main(argv=None):
               "min_border": args.min_border_distance, "use_weights": not args.no_weights,
               "seed": args.seed, "linkage": args.linkage, "k_min": args.k_min,
               "k_max": args.k_max, "min_cluster_size": args.min_cluster_size, "k": args.k}
-    trial = trial_name(**params)
-    with open(trial_dir(args.dataset, trial) / "config.json", "w") as handle:
-        json.dump(params, handle, indent=2)
-    print(f"== Trial: output/{args.dataset}/trials/{trial}")
+    if set(args.stages) - {"extract"}:
+        if pipeline.record_params(args.dataset, params) and not args.overwrite:
+            print("== Stage B/C parameters differ from the previous run: recomputing")
+            args.overwrite = True
+        print(f"== Outputs: output/{args.dataset}/trials/")
 
     for side in args.sides:
         fresh = False   # an upstream output was recomputed in this run
@@ -172,7 +171,7 @@ def main(argv=None):
         if "validate" in args.stages:
             print(f"== Validation: {side} | disjoint synapse halves, bootstrap consensus")
             validation = pipeline.validate_neurons(
-                args.dataset, trial, side, points_per_half=args.validation_points_per_half,
+                args.dataset, side, points_per_half=args.validation_points_per_half,
                 outer_reps=args.validation_reps, params=params, overwrite=args.overwrite)
         if "distances" in args.stages:
             clouds = Clouds(clouds_path(args.dataset, side))
@@ -180,53 +179,53 @@ def main(argv=None):
             if args.method == "shared":
                 print(f"== Stage B: {side} | shared mixture")
                 shared_model = pipeline.fit_shared_model(
-                    clouds, args.dataset, trial, side, min_synapses=args.min_synapses,
+                    clouds, args.dataset, side, min_synapses=args.min_synapses,
                     n_neurons=args.n_neurons, seed=args.seed, use_weights=not args.no_weights,
                     n_components=args.shared_k, fit_points=args.shared_fit_points,
                     min_border_um=args.min_border_distance)
             selection = dict(min_synapses=args.min_synapses, use_weights=not args.no_weights,
                              seed=args.seed, n_neurons=args.n_neurons,
                              min_border_um=args.min_border_distance, max_synapses=args.max_synapses)
-            exact = distance_dir(args.dataset, trial, side) / "exact.npz"
+            exact = distance_dir(args.dataset, side) / "exact.npz"
             if args.method == "points" and (args.overwrite or not exact.exists()):
                 print(f"== Stage B: {side} | exact distances of the complete clouds")
-                pipeline.compute_exact_distances(clouds, args.dataset, trial, side, **selection)
+                pipeline.compute_exact_distances(clouds, args.dataset, side, **selection)
                 fresh = True
             for rep in range(args.n_reps):
-                path = distance_dir(args.dataset, trial, side) / f"rep{rep:03d}.npz"
+                path = distance_dir(args.dataset, side) / f"rep{rep:03d}.npz"
                 if path.exists() and not args.overwrite:
                     continue
                 print(f"== Stage B: {side} | bootstrap replicate {rep}")
-                pipeline.compute_distances(clouds, args.dataset, trial, side, rep, method=args.method,
+                pipeline.compute_distances(clouds, args.dataset, side, rep, method=args.method,
                                            shared_model=shared_model, shared_alpha=args.shared_alpha,
                                            **selection)
                 fresh = True
 
         reclustered = False   # Stage C recomputed in this run
         if "cluster" in args.stages:
-            summary = cluster_dir(args.dataset, trial, side) / "summary.json"
+            summary = cluster_dir(args.dataset, side) / "summary.json"
             if summary.exists() and not (fresh or args.overwrite):
                 print(f"== Stage C: {side} already clustered")
             else:
                 print(f"== Stage C: {side}")
                 pipeline.cluster_neurons(
-                    args.dataset, trial, side, linkage=args.linkage,
+                    args.dataset, side, linkage=args.linkage,
                     k_values=list(range(args.k_min, args.k_max + 1)),
                     min_cluster_size=args.min_cluster_size, k=args.k, run_info=params)
                 reclustered = True
 
         if validation is not None:
-            pipeline.compare_validation_to_full(validation, args.dataset, trial, side)
+            pipeline.compare_validation_to_full(validation, args.dataset, side)
 
         if "assign" in args.stages:
             tag = f"{side} | query {args.query}"
-            summary = assign_dir(args.dataset, trial, side, args.query) / "summary.json"
+            summary = assign_dir(args.dataset, side, args.query) / "summary.json"
             if summary.exists() and not (fresh or reclustered or args.overwrite):
                 print(f"== Stage D: {tag} already assigned")
             else:
                 print(f"== Stage D: {tag}")
                 pipeline.assign_neurons(
-                    args.dataset, trial, side, query=args.query, min_synapses=args.min_synapses,
+                    args.dataset, side, query=args.query, min_synapses=args.min_synapses,
                     use_weights=not args.no_weights, seed=args.seed, max_synapses=args.max_synapses,
                     n_neighbours=args.knn, template_k_max=args.template_k_max,
                     template_points=args.template_points, cv_folds=args.cv_folds,

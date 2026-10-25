@@ -16,9 +16,9 @@ between-neuron scale to read them against. With --reruns N the whole
 selection is additionally rerun N times per neuron and the final models
 compared the same way (N times the fitting time).
 
-Neurons are selected exactly like a pipeline trial (same --n-neurons,
+Neurons are selected exactly like a pipeline run (same --n-neurons,
 --min-synapses, --min-border-distance, --seed), so the outputs join
-the trial's cluster tables on pt_root_id. This is test code, so the outputs
+the pipeline's cluster tables on pt_root_id. This is test code, so the outputs
 are flat files in gmm_output/ with the side as prefix, and every run
 overwrites the previous one (the options and command are in the summary):
 

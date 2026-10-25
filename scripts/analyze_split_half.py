@@ -4,7 +4,9 @@ Measure Split-Half Variability at Matched Synapse Counts
 Read Stage-A clouds; uniformly draw two disjoint m-synapse halves per neuron.
 Compare within-neuron W2 with m-vs-m between-neuron W2 on fixed random pairs.
 The same cohort (eligible at the largest m) and pairs are used at every m.
-See docs/split_half.md for interpretation, outputs and computational cost.
+Outputs go to output/<dataset>/split_half/<side>/; a later call with other
+options or regenerated clouds recomputes and overwrites them. See
+docs/split_half.md for interpretation, outputs and computational cost.
 
 Example::
 
@@ -27,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from celltype import pipeline, plotting, split_half
 from celltype.clouds import Clouds
 from celltype.config import (DATASETS, SIDES, allocated_cpus, clouds_path, file_fingerprint,
-                             split_half_dir, split_half_name)
+                             split_half_dir)
 
 
 def _positive(value):
@@ -58,7 +60,8 @@ def main(argv=None):
     parser.add_argument("--min-border-distance", type=float, default=0.0)
     parser.add_argument("--no-weights", action="store_true")
     parser.add_argument("--seed", type=_nonnegative, default=20261019)
-    parser.add_argument("--overwrite", action="store_true")
+    parser.add_argument("--overwrite", action="store_true",
+                        help="recompute a completed run (implied when the options or clouds changed)")
     args = parser.parse_args(argv)
     if not np.isfinite(args.min_border_distance) or args.min_border_distance < 0:
         parser.error("--min-border-distance must be finite and nonnegative")
@@ -80,12 +83,17 @@ def main(argv=None):
                    "use_weights": not args.no_weights, "seed": args.seed,
                    # The fingerprint prevents stale reuse when Stage A was regenerated in place.
                    "source": file_fingerprint(path)}
-        outdir = split_half_dir(args.dataset, split_half_name(options), side)
+        outdir = split_half_dir(args.dataset, side)
         outputs = ("distances.npz", "neurons.csv", "pairs.csv", "config.json", "summary.json",
                    "distributions.png", "sample_size.png", "covariates.png")
         if not args.overwrite and all((outdir / name).exists() for name in outputs):
-            print(f"[{side}] reusing completed analysis: {outdir}")
-            continue
+            with open(outdir / "config.json") as handle:
+                previous = json.load(handle)
+            changed = sorted(key for key in set(previous) | set(options) if previous.get(key) != options.get(key))
+            if not changed:
+                print(f"[{side}] reusing completed analysis: {outdir}")
+                continue
+            print(f"[{side}] options or clouds changed ({', '.join(changed)}); recomputing")
         # The summary is the completion marker; remove it before any partial rerun.
         (outdir / "summary.json").unlink(missing_ok=True)
         eligible = pipeline.eligible_neurons(clouds, args.min_synapses, args.min_border_distance)

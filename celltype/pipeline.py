@@ -6,13 +6,14 @@ stage's files from ``output/<dataset>/`` and writes its own:
 
   A  extract_clouds           clouds_{axon,dendrite}.npz
      extract_all_dendrites    clouds_dendrite_all.npz (every cell, for --query all)
-     validate_neurons         trials/<trial>/validate_<side>/<run>/ (optional: --stages ... validate;
+     record_params            trials/config.json (the Stage B/C parameters of the last run)
+     validate_neurons         trials/validate_<side>/ (optional: --stages ... validate;
                               disjoint synapse halves of the Stage B/C cohort, see split_cluster.py)
-  B  compute_exact_distances  trials/<trial>/dist_<side>/exact.npz (--method points)
-     fit_shared_model         trials/<trial>/shared_<side>.npz (--method shared only)
-     compute_distances        trials/<trial>/dist_<side>/rep<b>.npz (bootstrap replicates)
-  C  cluster_neurons          trials/<trial>/cluster_<side>/
-  D  assign_neurons           trials/<trial>/assign_<side>_<query>/ (optional: --stages ... assign)
+  B  compute_exact_distances  trials/dist_<side>/exact.npz (--method points)
+     fit_shared_model         trials/shared_<side>.npz (--method shared only)
+     compute_distances        trials/dist_<side>/rep<b>.npz (bootstrap replicates)
+  C  cluster_neurons          trials/cluster_<side>/
+  D  assign_neurons           trials/assign_<side>_<query>/ (optional: --stages ... assign)
 """
 
 from __future__ import annotations
@@ -27,7 +28,7 @@ import pyarrow as pa
 from . import assign, clustering, plotting, shared, split_cluster
 from .clouds import Clouds, build_side, load_cell_table, load_synapses, proofread_cells
 from .config import (SIDES, allocated_cpus, assign_dir, cluster_dir, clouds_path, distance_dir,
-                     file_fingerprint, shared_model_path, validation_dir)
+                     file_fingerprint, shared_model_path, trial_dir, validation_dir)
 from .distances import bootstrap_replicate, cross, exact_distances, gather, pairwise
 from .split_half import half_sizes
 
@@ -107,7 +108,24 @@ def select_neurons(clouds, min_synapses, n_neurons, seed, min_border_um=0.0):
     return np.sort(np.random.default_rng(seed).choice(eligible, size=n_neurons, replace=False))
 
 
-def validate_neurons(dataset, trial, side, *, points_per_half, outer_reps, params, overwrite=False):
+def record_params(dataset, params):
+    """Save the Stage B/C parameters as ``trials/config.json``; True when they differ from the saved ones.
+
+    There is one set of outputs per dataset, so a run with other parameters
+    must recompute what it runs; the caller then overwrites the previous files
+    instead of mixing them with the new ones.
+    """
+    path = trial_dir(dataset) / "config.json"
+    changed = False
+    if path.exists():
+        with open(path) as handle:
+            changed = json.load(handle) != params
+    with open(path, "w") as handle:
+        json.dump(params, handle, indent=2)
+    return changed
+
+
+def validate_neurons(dataset, side, *, points_per_half, outer_reps, params, overwrite=False):
     """Optional validation stage, on exactly the full pipeline's selected cohort."""
     if params["method"] != "points":
         raise ValueError("validate currently supports --method points only")
@@ -133,17 +151,17 @@ def validate_neurons(dataset, trial, side, *, points_per_half, outer_reps, param
                "use_weights": params["use_weights"], "linkage": params["linkage"],
                "min_cluster_size": params["min_cluster_size"], "k": params["k"],
                "k_values": list(range(params["k_min"], params["k_max"] + 1))}
-    outdir = validation_dir(dataset, trial, side, options)
+    outdir = validation_dir(dataset, side)
     split_cluster.run(flat, options, outdir, n_jobs=allocated_cpus(), overwrite=overwrite)
     print(f"Validation outputs in {outdir}")
     return outdir
 
 
-def compare_validation_to_full(outdir, dataset, trial, side):
+def compare_validation_to_full(outdir, dataset, side):
     """Report k_full coverage without using the held-out results to choose k."""
     path = outdir / "summary.json"
     summary = json.loads(path.read_text())
-    full_path = cluster_dir(dataset, trial, side) / "summary.json"
+    full_path = cluster_dir(dataset, side) / "summary.json"
     comparison = {"status": "full_fit_missing", "k_full": None}
     if full_path.exists():
         full = json.loads(full_path.read_text())
@@ -189,10 +207,10 @@ def _distance_provenance(directory, clouds, eligible):
     return current if known else None
 
 
-def fit_shared_model(clouds, dataset, trial, side, *, min_synapses, n_neurons, seed, use_weights,
+def fit_shared_model(clouds, dataset, side, *, min_synapses, n_neurons, seed, use_weights,
                      n_components, fit_points, min_border_um=0.0):
-    """Stage B (``--method shared``): the side's shared mixture, fitted once per trial."""
-    path = shared_model_path(dataset, trial, side)
+    """Stage B (``--method shared``): the side's shared mixture, fitted once per dataset."""
+    path = shared_model_path(dataset, side)
     if path.exists():
         print(f"[{side}] loading shared mixture {path}")
         return shared.SharedGMM.load(path)
@@ -222,7 +240,7 @@ def _report_eligible(clouds, side, min_synapses, n_neurons, seed, min_border_um,
     return eligible
 
 
-def compute_exact_distances(clouds, dataset, trial, side, *, min_synapses, use_weights, seed,
+def compute_exact_distances(clouds, dataset, side, *, min_synapses, use_weights, seed,
                             n_neurons=None, min_border_um=0.0, max_synapses=None):
     """Stage B (``--method points``): the exact W2 matrix of the complete clouds, ``exact.npz``.
 
@@ -239,7 +257,7 @@ def compute_exact_distances(clouds, dataset, trial, side, *, min_synapses, use_w
     print(f"synapses per cloud: median {np.median(sizes):.0f}, max {sizes.max()}; "
           f"{eligible.size * (eligible.size - 1) // 2} pairs")
     result = exact_distances(flat, n_jobs)
-    path = distance_dir(dataset, trial, side) / "exact.npz"
+    path = distance_dir(dataset, side) / "exact.npz"
     np.savez_compressed(path, eligible=eligible, cell_ids=clouds.cell_ids[eligible], method="points",
                         source_sha256=_source_sha256(clouds),
                         max_synapses=max_synapses or 0, n_synapses=sizes, min_synapses=min_synapses,
@@ -249,7 +267,7 @@ def compute_exact_distances(clouds, dataset, trial, side, *, min_synapses, use_w
     print(f"Saved {path} ({time.time() - start:.0f}s)")
 
 
-def compute_distances(clouds, dataset, trial, side, rep, *, min_synapses, use_weights, seed,
+def compute_distances(clouds, dataset, side, rep, *, min_synapses, use_weights, seed,
                       n_neurons=None, min_border_um=0.0, method="points", shared_model=None,
                       shared_alpha=10.0, max_synapses=None):
     """Stage B: one bootstrap replicate of the neuron-to-neuron distance matrix, ``rep<b>.npz``.
@@ -271,7 +289,7 @@ def compute_distances(clouds, dataset, trial, side, rep, *, min_synapses, use_we
         result = shared.compute_replicate(clouds, eligible, shared_model, alpha=shared_alpha,
                                           use_weights=use_weights, rng=rng, n_jobs=n_jobs)
 
-    path = distance_dir(dataset, trial, side) / f"rep{rep:03d}.npz"
+    path = distance_dir(dataset, side) / f"rep{rep:03d}.npz"
     np.savez_compressed(path, eligible=eligible, cell_ids=clouds.cell_ids[eligible],
                         source_sha256=_source_sha256(clouds),
                         method=method, max_synapses=max_synapses or 0, min_synapses=min_synapses,
@@ -282,10 +300,10 @@ def compute_distances(clouds, dataset, trial, side, rep, *, min_synapses, use_we
     print(f"Saved {path} ({time.time() - start:.0f}s)")
 
 
-def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size,
+def cluster_neurons(dataset, side, *, linkage, k_values, min_cluster_size,
                     k=None, run_info=None):
     """Stage C: consensus clustering over replicates; write tables and figures."""
-    directory = distance_dir(dataset, trial, side)
+    directory = distance_dir(dataset, side)
     matrices, self_distances, eligible = clustering.load_replicates(directory)
     exact = clustering.load_exact(directory, eligible)
     print(f"Loaded {matrices.shape[0]} replicates over {eligible.size} neurons"
@@ -316,7 +334,7 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
     labels, together = fit["labels"], fit["co_clustering"]
     tree = clustering.build_tree(distance, linkage)
 
-    outdir = cluster_dir(dataset, trial, side)
+    outdir = cluster_dir(dataset, side)
     for kk in reached:
         table[f"cluster_k{kk}"] = consensus[kk]
     table["self_distance_um"] = self_mean
@@ -326,7 +344,7 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
     np.save(outdir / "distance.npy", distance.astype(np.float32))
 
     summary = {
-        "run": {"dataset": dataset, "trial": trial, "side": side, "linkage": linkage,
+        "run": {"dataset": dataset, "side": side, "linkage": linkage,
                 **(run_info or {})},
         "n_neurons": int(eligible.size),
         "cell_ids": clouds.cell_ids[eligible].tolist(),
@@ -370,9 +388,9 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
 # Stage D
 # ---------------------------------------------------------------------------
 
-def load_reference(dataset, trial, side, clouds, k=None):
+def load_reference(dataset, side, clouds, k=None):
     """Clustered neurons (indices into ``clouds``) and their consensus labels at k."""
-    outdir = cluster_dir(dataset, trial, side)
+    outdir = cluster_dir(dataset, side)
     with open(outdir / "summary.json") as handle:
         summary = json.load(handle)
     k = int(k or summary["chosen_k"])
@@ -407,7 +425,7 @@ def query_set(dataset, side, query, clouds, reference, min_synapses, min_border_
     return all_clouds, eligible[~known]
 
 
-def assign_neurons(dataset, trial, side, *, query, min_synapses, use_weights, seed, n_neighbours,
+def assign_neurons(dataset, side, *, query, min_synapses, use_weights, seed, n_neighbours,
                    template_k_max, template_points, cv_folds, reject_quantile, min_border_um=0.0,
                    k=None, run_info=None, max_synapses=None):
     """Stage D: calibrate both assignment methods on the clustered neurons, then assign the queries.
@@ -417,7 +435,7 @@ def assign_neurons(dataset, trial, side, *, query, min_synapses, use_weights, se
     start = time.time()
     n_jobs = allocated_cpus()
     clouds = Clouds(clouds_path(dataset, side))
-    reference, labels, k = load_reference(dataset, trial, side, clouds, k)
+    reference, labels, k = load_reference(dataset, side, clouds, k)
     n_clusters = int(labels.max())
     query_clouds, queries = query_set(dataset, side, query, clouds, reference, min_synapses,
                                       min_border_um)
@@ -429,8 +447,8 @@ def assign_neurons(dataset, trial, side, *, query, min_synapses, use_weights, se
           f"{n_jobs} CPUs")
 
     # 1. Cross-validation on the reference set: calibration and held-out metrics.
-    distances = clustering.load_exact(distance_dir(dataset, trial, side), reference)
-    if distances is None:        # e.g. a --method shared trial: the point-cloud W2 is computed here
+    distances = clustering.load_exact(distance_dir(dataset, side), reference)
+    if distances is None:        # e.g. after --method shared: the point-cloud W2 is computed here
         distances = pairwise(gather(clouds, reference, use_weights, max_synapses, seed), n_jobs)
     print(f"reference distances ready ({time.time() - start:.0f}s)")
     cv = assign.cross_validate(clouds, reference, labels, n_clusters, distances, n_folds=cv_folds,
@@ -446,7 +464,7 @@ def assign_neurons(dataset, trial, side, *, query, min_synapses, use_weights, se
                                                 **templating)
 
     # 3. Queries.
-    outdir = assign_dir(dataset, trial, side, query)
+    outdir = assign_dir(dataset, side, query)
     queries_summary = None
     if queries.size:
         pool = reference[labels > 0]
@@ -471,7 +489,7 @@ def assign_neurons(dataset, trial, side, *, query, min_synapses, use_weights, se
     with open(outdir / "templates.json", "w") as handle:
         json.dump(assign.serialise_templates(templates, selection, labels), handle, indent=2)
     summary = {
-        "run": {"dataset": dataset, "trial": trial, "side": side, "query": query,
+        "run": {"dataset": dataset, "side": side, "query": query,
                 "min_border_um": min_border_um,
                 "max_synapses": max_synapses, "n_neighbours": n_neighbours,
                 "template_k_max": template_k_max, "template_points": template_points,

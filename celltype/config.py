@@ -7,18 +7,19 @@ Input tables are the ones used by the Stage-1 GMM fit in
 
   clouds_<side>.npz                              (Stage A, shared)
   clouds_dendrite_all.npz                        (Stage A with --all-cells)
-  trials/<trial>/config.json                     (run parameters)
-  trials/<trial>/validate_<side>/<run>/          (optional split-half clustering validation)
-  trials/<trial>/shared_<side>.npz               (Stage B, --method shared only)
-  trials/<trial>/dist_<side>/exact.npz           (Stage B, --method points: complete clouds)
-  trials/<trial>/dist_<side>/rep<b>.npz          (Stage B, bootstrap replicates)
-  trials/<trial>/cluster_<side>/...              (Stage C)
-  trials/<trial>/assign_<side>_<query>/          (Stage D, optional)
-  split_half/<run>/<side>/                       (scripts/analyze_split_half.py, beside the trials)
+  trials/config.json                             (Stage B/C parameters of the last run)
+  trials/validate_<side>/                        (optional split-half clustering validation)
+  trials/shared_<side>.npz                       (Stage B, --method shared only)
+  trials/dist_<side>/exact.npz                   (Stage B, --method points: complete clouds)
+  trials/dist_<side>/rep<b>.npz                  (Stage B, bootstrap replicates)
+  trials/cluster_<side>/...                      (Stage C)
+  trials/assign_<side>_<query>/                  (Stage D, optional)
+  split_half/<side>/                             (scripts/analyze_split_half.py)
 
-``<trial>`` is built from the Stage B and C parameters (``trial_name``), so
-runs with different parameters never share or overwrite each other's files;
-``<run>`` names carry a digest of every option of the analysis.
+One set of outputs per dataset. ``trials/config.json`` and the validation and
+split-half ``config.json`` files record the options that produced them; a
+later call with other options (or regenerated clouds) recomputes and
+overwrites the files, so outputs of different settings never mix.
 
 The per-neuron GMM analysis (scripts/fit_neuron_gmms.py, test code) writes
 flat files gmm_output/<side>_*.{csv,json,png}; every run overwrites the last.
@@ -27,7 +28,6 @@ flat files gmm_output/<side>_*.{csv,json,png}; every run overwrites the last.
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 from pathlib import Path
 
@@ -66,37 +66,6 @@ def allocated_cpus():
     return int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
 
 
-# ``--method points`` compares the complete synapse clouds; the exact W2 between
-# clouds of n and m points costs about n * m memory and a little more than n^2 time (see
-# docs/pipeline.md). Dendrites have a median of 2400 synapses (max 25k), axons 400
-# (max 12k); ``max_synapses`` caps only the largest clouds.
-
-
-def trial_name(*, n_neurons, n_reps, min_synapses, use_weights, seed,
-               linkage, k_min, k_max, min_cluster_size, k=None, max_synapses=None,
-               method="points", shared_k=30, shared_alpha=10.0, min_border=0.0):
-    """Readable folder name that encodes every Stage B and C parameter.
-
-    The third token says how neurons are compared: ``full`` for the exact W2
-    between the complete synapse clouds (``max<n>`` when clouds above n
-    synapses are capped), ``shared<K>_a<alpha>`` for MW2 between mixing
-    weights over K shared components with Dirichlet strength alpha.
-    ``border<um>`` marks a minimum soma distance from the volume border.
-    """
-    if method == "points":
-        sampling = f"max{max_synapses}" if max_synapses else "full"
-    else:
-        sampling = f"shared{shared_k}_a{shared_alpha:g}"
-    parts = [f"n{n_neurons or 'all'}", f"rep{n_reps}", sampling, f"min{min_synapses}"]
-    if min_border:
-        parts.append(f"border{min_border:g}")
-    parts += ["weighted" if use_weights else "unweighted", f"seed{seed}", linkage,
-              f"k{k_min}-{k_max}", f"mcs{min_cluster_size}"]
-    if k is not None:
-        parts.append(f"show{k}")
-    return "_".join(parts)
-
-
 def _ensure(path):
     path.mkdir(parents=True, exist_ok=True)
     return path
@@ -112,25 +81,26 @@ def clouds_path(dataset, side, scope="proofread"):
     return dataset_dir(dataset) / f"clouds_{side}{suffix}.npz"
 
 
-def trial_dir(dataset, trial):
-    return _ensure(dataset_dir(dataset) / "trials" / trial)
+def trial_dir(dataset):
+    """Every Stage B to D and validation output of the dataset."""
+    return _ensure(dataset_dir(dataset) / "trials")
 
 
-def shared_model_path(dataset, trial, side):
+def shared_model_path(dataset, side):
     """The fitted shared-component mixture of ``--method shared``."""
-    return trial_dir(dataset, trial) / f"shared_{side}.npz"
+    return trial_dir(dataset) / f"shared_{side}.npz"
 
 
-def distance_dir(dataset, trial, side):
-    return _ensure(trial_dir(dataset, trial) / f"dist_{side}")
+def distance_dir(dataset, side):
+    return _ensure(trial_dir(dataset) / f"dist_{side}")
 
 
-def cluster_dir(dataset, trial, side):
-    return _ensure(trial_dir(dataset, trial) / f"cluster_{side}")
+def cluster_dir(dataset, side):
+    return _ensure(trial_dir(dataset) / f"cluster_{side}")
 
 
-def assign_dir(dataset, trial, side, query):
-    return _ensure(trial_dir(dataset, trial) / f"assign_{side}_{query}")
+def assign_dir(dataset, side, query):
+    return _ensure(trial_dir(dataset) / f"assign_{side}_{query}")
 
 
 def gmm_dir():
@@ -138,20 +108,9 @@ def gmm_dir():
     return _ensure(GMM_OUTPUT_ROOT)
 
 
-def _options_digest(options, length):
-    """Leading hex digits of the SHA-256 of a JSON-serialisable options dict."""
-    return hashlib.sha256(json.dumps(options, sort_keys=True, allow_nan=False).encode()).hexdigest()[:length]
-
-
-def split_half_name(options):
-    """Readable diagnostic name plus a digest of all options and the input-cloud fingerprint."""
-    sizes = "-".join(str(m) for m in options["points_per_half"])
-    return f"m{sizes}_rep{options['n_reps']}_n{options['n_neurons'] or 'all'}_{_options_digest(options, 12)}"
-
-
-def split_half_dir(dataset, run, side):
-    """Independent diagnostics beside the main pipeline trials."""
-    return _ensure(dataset_dir(dataset) / "split_half" / run / side)
+def split_half_dir(dataset, side):
+    """Outputs of ``scripts/analyze_split_half.py`` for one side."""
+    return _ensure(dataset_dir(dataset) / "split_half" / side)
 
 
 def file_fingerprint(path):
@@ -164,8 +123,6 @@ def file_fingerprint(path):
             "sha256": digest.hexdigest()}
 
 
-def validation_dir(dataset, trial, side, options):
-    """One validation run per source, cohort and complete set of settings."""
-    sizes = "-".join(str(m) for m in options["points_per_half"])
-    return _ensure(trial_dir(dataset, trial) / f"validate_{side}"
-                   / f"m{sizes}_rep{options['outer_reps']}_{_options_digest(options, 16)}")
+def validation_dir(dataset, side):
+    """The split-half clustering validation of one side."""
+    return _ensure(trial_dir(dataset) / f"validate_{side}")

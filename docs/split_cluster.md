@@ -115,11 +115,12 @@ independent evaluation for confirmatory claims.
 
 ## Outputs and resume
 
-Results live under
-`trials/<trial>/validate_<side>/m<sizes>_rep<count>_<digest>/`. The trial remains the
-same full-fit trial regardless of validation settings. The validation digest
-covers algorithm version, every statistical setting, source-file SHA-256 and the
-ordered cell IDs. CPU count is excluded because it does not change the result.
+Results live in `trials/validate_<side>/`, beside the full fit. Its `config.json`
+records the algorithm version, every statistical setting, the source-file SHA-256
+and the ordered cell IDs. A later call that changes any of these recomputes every
+split (the old checkpoints are removed first); more half sizes or more outer splits
+extend the run instead, reusing the splits already saved. CPU count does not change
+the result.
 
 | File | Contents |
 |---|---|
@@ -135,7 +136,7 @@ Checkpoints are written atomically after each **outer** repeat. Rerunning the sa
 command reuses completed repeats and regenerates tables and figures; an interrupted
 repeat restarts from its beginning. `--overwrite` recomputes them. A mismatched or
 invalid checkpoint raises an error rather than silently reusing different data.
-Changed inputs or parameters create a separate directory.
+Changed inputs or parameters recompute the run, as described above.
 
 The full fit is linked only when its recorded source hash, ordered cohort and run
 parameters agree. Old distance caches without a fingerprint remain loadable but

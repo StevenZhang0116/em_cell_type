@@ -173,10 +173,8 @@ def test_entry_point_fixed_cohort_outputs_and_safe_reuse(tmp_path, monkeypatch):
     args = ["--sides", "axon", "--points-per-half", "10", "20", "--n-reps", "2",
             "--min-synapses", "1", "--min-border-distance", "50", "--between-pairs", "10"]
     script.main(args)
-    summaries = list(tmp_path.glob("microns/split_half/*/axon/summary.json"))
-    assert len(summaries) == 1
-    outdir = summaries[0].parent
-    report = json.loads(summaries[0].read_text())
+    outdir = config.split_half_dir("microns", "axon")
+    report = json.loads((outdir / "summary.json").read_text())
     assert report["n_neurons"] == 2 and report["n_pairs"] == 1
     assert report["selection"] == {"n_input": 4, "n_below_min_synapses": 0, "n_excluded_by_border": 1,
                                     "n_insufficient_for_largest_m": 1, "n_eligible_at_all_m": 2,
@@ -192,22 +190,18 @@ def test_entry_point_fixed_cohort_outputs_and_safe_reuse(tmp_path, monkeypatch):
     timestamp = (outdir / "distances.npz").stat().st_mtime_ns
     script.main(args)
     assert (outdir / "distances.npz").stat().st_mtime_ns == timestamp
-    # Regenerating Stage A in place must produce a different run, not stale reuse.
-    old = report["options"]
-    changed = {**old, "source": {**old["source"], "sha256": "different"}}
-    assert config.split_half_name(old) != config.split_half_name(changed)
-    assert config.split_half_name(old) != config.split_half_name({**old, "use_weights": False})
-    assert config.split_half_name(old) != config.split_half_name({**old, "n_pairs": 0})
-    assert config.split_half_name(old) != config.split_half_name({**old, "min_border_um": 60.0})
+    # Other options or regenerated clouds are recomputed, never mixed with the old files.
+    script.main(args + ["--between-pairs", "0"])
+    assert (outdir / "distances.npz").stat().st_mtime_ns != timestamp
+    assert pd.read_csv(outdir / "pairs.csv").empty
     with np.load(path, allow_pickle=False) as archive:
         contents = dict(archive)
     contents["dx"] = contents["dx"] * 2
     np.savez(path, **contents)
+    timestamp = (outdir / "distances.npz").stat().st_mtime_ns
     script.main(args)
-    summaries = list(tmp_path.glob("microns/split_half/*/axon/summary.json"))
-    assert len(summaries) == 2
-    assert len({json.loads(p.read_text())["options"]["source"]["sha256"] for p in summaries}) == 2
-    assert (outdir / "distances.npz").stat().st_mtime_ns == timestamp
+    assert (outdir / "distances.npz").stat().st_mtime_ns != timestamp
+    assert json.loads((outdir / "summary.json").read_text())["options"]["source"] == config.file_fingerprint(path)
 
 
 def test_entry_point_self_only_and_incomplete_run_recovery(tmp_path, monkeypatch):
@@ -218,7 +212,7 @@ def test_entry_point_self_only_and_incomplete_run_recovery(tmp_path, monkeypatch
     args = ["--dataset", "v1dd", "--sides", "dendrite", "--points-per-half", "20",
             "--n-reps", "1", "--min-synapses", "1", "--between-pairs", "0", "--no-weights"]
     script.main(args)
-    outdir = next(tmp_path.glob("v1dd/split_half/*/dendrite/summary.json")).parent
+    outdir = config.split_half_dir("v1dd", "dendrite")
     assert pd.read_csv(outdir / "pairs.csv").empty
     assert json.loads((outdir / "summary.json").read_text())["n_pairs"] == 0
     assert pd.read_csv(outdir / "neurons.csv")["weight_ess"].tolist() == pytest.approx([40])

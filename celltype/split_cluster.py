@@ -24,6 +24,16 @@ from .split_half import split_clouds
 
 VERSION = 1
 
+# Settings that make two validation runs incompatible. The half sizes and the
+# number of outer splits may grow (new checkpoints are added); every other
+# option must match for the saved checkpoints to be reused.
+IDENTITY = ("version", "dataset", "side", "source", "cell_ids", "full_params", "inner_reps",
+            "seed", "use_weights", "linkage", "min_cluster_size", "k", "k_values")
+
+
+def _identity(options):
+    return {key: options.get(key) for key in IDENTITY}
+
 
 def fit_half(flat, *, n_reps, seed, n_jobs, linkage, k_values, min_cluster_size, k=None):
     """Exact distances and the same bootstrap consensus estimator as Stage C."""
@@ -148,7 +158,8 @@ def _save_checkpoint(path, result, options, m, rep):
 def _load_checkpoint(path, options, m, rep):
     with np.load(path, allow_pickle=False) as data:
         record = json.loads(str(data["record"]))
-        if record["options"] != options or record["points_per_half"] != m or record["rep"] != rep:
+        if (_identity(record["options"]) != _identity(options) or record["points_per_half"] != m
+                or record["rep"] != rep):
             raise ValueError(f"checkpoint settings mismatch: {path}")
         n = len(options["cell_ids"])
         for key, shape in (("distance_a", (n, n)), ("distance_b", (n, n)), ("labels_a", (n,)), ("labels_b", (n,))):
@@ -171,8 +182,16 @@ def run(flat, options, outdir, *, n_jobs=1, overwrite=False):
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
     manifest = outdir / "config.json"
-    if manifest.exists() and json.loads(manifest.read_text()) != options:
-        raise ValueError("validation cache settings/source/cohort mismatch; use a new output directory")
+    if manifest.exists() and not overwrite:
+        previous = json.loads(manifest.read_text())
+        changed = sorted(key for key in IDENTITY if previous.get(key) != options.get(key))
+        if changed:
+            print(f"validation settings or clouds changed ({', '.join(changed)}); recomputing every split",
+                  flush=True)
+            overwrite = True
+    if overwrite:                       # never leave checkpoints of other settings behind
+        for stale in outdir.glob("m*_rep*.npz"):
+            stale.unlink()
     write_json(manifest, options)
     # The completion marker is rebuilt only after every requested repeat succeeds.
     (outdir / "summary.json").unlink(missing_ok=True)

@@ -1,8 +1,8 @@
 # Stage D (optional): assigning neurons to the clusters
 
 Stage D is not part of the default run; add `assign` to `--stages` of
-`scripts/run_pipeline.py` to use it (the trial must already have its Stage C clusters, so
-give the same Stage B and C options). The clustering is quadratic in the number of neurons,
+`scripts/run_pipeline.py` to use it (Stage C must already have run, with the same Stage B and
+C options). The clustering is quadratic in the number of neurons,
 so the dendrite side (15k proofread neurons) can be clustered on a subset and the rest
 assigned. Queries are `--query rest` (proofread neurons of the same side that were not
 clustered), `--query all` (the dendrite of every cell in the table, from
@@ -12,7 +12,7 @@ label 0:
 
 - **knn**: the exact W2 between the query's complete synapse cloud and that of every
   clustered non-outlier neuron, as in Stage B (the reference-to-reference matrix is Stage
-  B's `exact.npz`, recomputed for a `--method shared` trial; `--max-synapses` applies to
+  B's `exact.npz`, recomputed for a `--method shared` run; `--max-synapses` applies to
   the queries too), and the `--knn` nearest references vote with weight `exp(-d^2 / tau)`.
 - **template**: each cluster's synapses are pooled (soma-centred) and fitted with the
   cylindrically constrained weighted GMM of `../mixture` (`celltype/templates.py`: diagonal
@@ -45,7 +45,7 @@ dendrites (`--query all`) may be truncated or merged. The kNN distances cost one
 per query-reference pair (cost table in [pipeline.md](pipeline.md)), so assigning the 12k
 remaining dendrites to 3k references is out of reach without `--max-synapses`.
 
-## Outputs (`trials/<trial>/assign_<side>_<query>/`)
+## Outputs (`trials/assign_<side>_<query>/`)
 
 | File | Content |
 |---|---|

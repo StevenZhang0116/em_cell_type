@@ -14,10 +14,10 @@ copied.
 | Stage | What | Output |
 |---|---|---|
 | A | the synapse cloud of every proofread neuron: soma-centred offsets with border-compensation weights | `output/<dataset>/clouds_<side>.npz` |
-| validate (optional) | disjoint synapse halves; choose consensus k using A alone, refit B at that k, report agreement, coverage and held-out separation | `trials/<trial>/validate_<side>/<run>/` |
-| B | neuron-to-neuron distances: the exact W2 between the complete synapse clouds, plus bootstrap replicates for the noise; or MW2 over one shared Gaussian mixture | `trials/<trial>/dist_<side>/` |
-| C | consensus clustering of the replicates, choice of k, checks against the dataset labels and confounds | `trials/<trial>/cluster_<side>/` |
-| D (optional) | assign unclustered neurons to the clusters (kNN on W2 and cluster templates), calibrated by cross-validation | `trials/<trial>/assign_<side>_<query>/` |
+| validate (optional) | disjoint synapse halves; choose consensus k using A alone, refit B at that k, report agreement, coverage and held-out separation | `trials/validate_<side>/` |
+| B | neuron-to-neuron distances: the exact W2 between the complete synapse clouds, plus bootstrap replicates for the noise; or MW2 over one shared Gaussian mixture | `trials/dist_<side>/` |
+| C | consensus clustering of the replicates, choice of k, checks against the dataset labels and confounds | `trials/cluster_<side>/` |
+| D (optional) | assign unclustered neurons to the clusters (kNN on W2 and cluster templates), calibrated by cross-validation | `trials/assign_<side>_<query>/` |
 
 Beside the pipeline, `scripts/fit_neuron_gmms.py` fits the weighted Gaussian mixture of
 `../mixture` to every neuron and measures how stable those fits are (`gmm_output/`).
@@ -28,7 +28,7 @@ significance tests for discrete cell types.
 
 ## Documentation
 
-- [docs/pipeline.md](docs/pipeline.md): Stages A to C, trial folders and options, the two
+- [docs/pipeline.md](docs/pipeline.md): Stages A to C, outputs and options, the two
   distance methods and their cost, Stage C outputs.
 - [docs/assignment.md](docs/assignment.md): Stage D, the two assignment methods,
   calibration, outputs.
@@ -60,8 +60,10 @@ $PYTHON -u scripts/analyze_split_half.py --sides axon --n-neurons 200 --points-p
 $PYTHON -u scripts/run_pipeline.py --sides dendrite --stages validate --n-neurons 100 --min-synapses 400 --validation-points-per-half 200 --validation-reps 10 --n-reps 5  # clustering validation
 ```
 
-Every trial is named after its Stage B and C parameters, so runs with different settings
-never overwrite each other; finished stages are skipped unless `--overwrite`.
+All outputs of a dataset live in `output/<dataset>/trials/`, one set per dataset; its
+`config.json` records the Stage B and C parameters of the last run. A run with other
+parameters recomputes the stages it runs and overwrites the previous files; with the same
+parameters, finished stages are skipped unless `--overwrite`.
 
 ## Layout
 
@@ -79,7 +81,7 @@ celltype/    library code (no command-line parsing)
   neuron_gmm.py  per-neuron GMMs with the weighted fitter imported from ../mixture
   split_half.py  disjoint, sample-matched self/between W2 diagnostics
   split_cluster.py  held-out validation of bootstrap consensus clustering
-scripts/     run_pipeline.py, compare_trials.py, fit_neuron_gmms.py, analyze_split_half.py
+scripts/     run_pipeline.py, fit_neuron_gmms.py, analyze_split_half.py
 docs/        pipeline.md, assignment.md, neuron_gmm.md, split_half.md, split_cluster.md
 tests/       pytest unit tests
 jobs/        env.sh (job environment: conda env, 1 BLAS thread) and the unit-test Slurm script

@@ -163,22 +163,22 @@ def test_pipeline_stages_b_and_c_end_to_end(tmp_path, monkeypatch):
     from celltype import config, pipeline
 
     clouds = _toy_clouds(tmp_path, monkeypatch)
-    pipeline.compute_exact_distances(clouds, "toy", "t", "axon", min_synapses=100, use_weights=True,
+    pipeline.compute_exact_distances(clouds, "toy", "axon", min_synapses=100, use_weights=True,
                                      seed=0)
     for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "t", "axon", rep, min_synapses=100,
+        pipeline.compute_distances(clouds, "toy", "axon", rep, min_synapses=100,
                                    use_weights=True, seed=0)
-    pipeline.cluster_neurons("toy", "t", "axon", linkage="average", k_values=[2, 3, 4],
+    pipeline.cluster_neurons("toy", "axon", linkage="average", k_values=[2, 3, 4],
                              min_cluster_size=2, k=3)
 
-    outdir = config.cluster_dir("toy", "t", "axon")
+    outdir = config.cluster_dir("toy", "axon")
     table = pd.read_csv(outdir / "neurons.csv")
     assert adjusted_rand_score(table["cell_type"], table["cluster_k3"]) == pytest.approx(1.0)
     assert (outdir / "co_clustering.png").exists()
     # The clustered distance is the exact matrix of the complete clouds, not the replicate mean.
     with open(outdir / "summary.json") as handle:
         assert json.load(handle)["distance_matrix"] == "exact"
-    with np.load(config.distance_dir("toy", "t", "axon") / "exact.npz") as data:
+    with np.load(config.distance_dir("toy", "axon") / "exact.npz") as data:
         exact = data["distance"]
         assert list(data["n_synapses"]) == [150] * 9
     assert np.allclose(np.load(outdir / "distance.npy"), exact)
@@ -190,12 +190,12 @@ def test_pipeline_random_subset_is_shared_across_replicates(tmp_path, monkeypatc
     from celltype import config, pipeline
 
     clouds = _toy_clouds(tmp_path, monkeypatch)
-    pipeline.compute_exact_distances(clouds, "toy", "t", "axon", min_synapses=100, use_weights=True,
+    pipeline.compute_exact_distances(clouds, "toy", "axon", min_synapses=100, use_weights=True,
                                      seed=0, n_neurons=6, max_synapses=100)
     for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "t", "axon", rep, min_synapses=100,
+        pipeline.compute_distances(clouds, "toy", "axon", rep, min_synapses=100,
                                    use_weights=True, seed=0, n_neurons=6, max_synapses=100)
-    directory = config.distance_dir("toy", "t", "axon")
+    directory = config.distance_dir("toy", "axon")
     matrices, _, eligible = clustering.load_replicates(directory)
     assert matrices.shape == (2, 6, 6) and eligible.size == 6
     assert clustering.load_exact(directory, eligible).shape == (6, 6)
@@ -217,18 +217,18 @@ def test_assign_stage_recovers_toy_groups(tmp_path, monkeypatch):
     from celltype import config, pipeline
 
     clouds = _toy_clouds(tmp_path, monkeypatch, per_group=5)
-    pipeline.compute_exact_distances(clouds, "toy", "t", "axon", min_synapses=100, use_weights=True,
+    pipeline.compute_exact_distances(clouds, "toy", "axon", min_synapses=100, use_weights=True,
                                      seed=0, n_neurons=12)
     for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "t", "axon", rep, min_synapses=100,
+        pipeline.compute_distances(clouds, "toy", "axon", rep, min_synapses=100,
                                    use_weights=True, seed=0, n_neurons=12)
-    pipeline.cluster_neurons("toy", "t", "axon", linkage="average", k_values=[2, 3, 4],
+    pipeline.cluster_neurons("toy", "axon", linkage="average", k_values=[2, 3, 4],
                              min_cluster_size=2, k=3)
-    pipeline.assign_neurons("toy", "t", "axon", query="rest", min_synapses=100, use_weights=True,
+    pipeline.assign_neurons("toy", "axon", query="rest", min_synapses=100, use_weights=True,
                             seed=0, n_neighbours=3, template_k_max=2, template_points=2000,
                             cv_folds=2, reject_quantile=1.0, k=3)
 
-    outdir = config.assign_dir("toy", "t", "axon", "rest")
+    outdir = config.assign_dir("toy", "axon", "rest")
     with open(outdir / "summary.json") as handle:
         summary = json.load(handle)
     assert summary["n_reference"] == 12 and summary["n_queries"] == 3
@@ -250,33 +250,28 @@ def test_assign_stage_recovers_toy_groups(tmp_path, monkeypatch):
         assert (outdir / name).exists()
 
     # query="none": calibration and validation only.
-    pipeline.assign_neurons("toy", "t", "axon", query="none", min_synapses=100, use_weights=True,
+    pipeline.assign_neurons("toy", "axon", query="none", min_synapses=100, use_weights=True,
                             seed=0, n_neighbours=3, template_k_max=2, template_points=2000,
                             cv_folds=2, reject_quantile=1.0, k=3)
-    outdir = config.assign_dir("toy", "t", "axon", "none")
+    outdir = config.assign_dir("toy", "axon", "none")
     with open(outdir / "summary.json") as handle:
         summary = json.load(handle)
     assert summary["n_queries"] == 0 and summary["queries"] is None
     assert not (outdir / "queries.csv").exists() and (outdir / "reference_cv.csv").exists()
 
 
-def test_trial_name_encodes_every_parameter():
-    from celltype import config
+def test_record_params_reports_changed_parameters(tmp_path, monkeypatch):
+    from celltype import config, pipeline
 
-    base = dict(n_neurons=10, n_reps=2, min_synapses=100, use_weights=True,
-                seed=1, linkage="average", k_min=2, k_max=3, min_cluster_size=5)
-    assert config.trial_name(**base) == "n10_rep2_full_min100_weighted_seed1_average_k2-3_mcs5"
-    assert config.trial_name(**base, max_synapses=3000).split("_")[2] == "max3000"
-    assert config.trial_name(**base, method="shared", shared_k=30, shared_alpha=10.0) \
-        == "n10_rep2_shared30_a10_min100_weighted_seed1_average_k2-3_mcs5"
-    assert config.trial_name(**{**base, "n_neurons": None}).startswith("nall_")
-    assert config.trial_name(**base, min_border=50.0) \
-        == "n10_rep2_full_min100_border50_weighted_seed1_average_k2-3_mcs5"
-    names = {config.trial_name(**{**base, key: value}) for key, value in
-             [("n_reps", 3), ("max_synapses", 1000), ("min_synapses", 50), ("use_weights", False),
-              ("seed", 2), ("linkage", "complete"), ("k_max", 5), ("min_cluster_size", 2),
-              ("method", "shared"), ("min_border", 50.0)]}
-    assert len(names) == 10 and config.trial_name(**base) not in names
+    monkeypatch.setattr(config, "OUTPUT_ROOT", tmp_path)
+    params = {"method": "points", "n_neurons": 10, "n_reps": 2, "max_synapses": None, "seed": 1}
+    assert pipeline.record_params("toy", params) is False            # first run: nothing to compare
+    assert pipeline.record_params("toy", dict(params)) is False      # the same parameters again
+    with open(config.trial_dir("toy") / "config.json") as handle:
+        assert json.load(handle) == params
+    assert pipeline.record_params("toy", {**params, "n_reps": 3}) is True
+    with open(config.trial_dir("toy") / "config.json") as handle:
+        assert json.load(handle)["n_reps"] == 3
 
 
 def test_border_filter_uses_um_against_stored_nm(tmp_path):
@@ -474,23 +469,23 @@ def test_shared_pipeline_recovers_toy_groups(tmp_path, monkeypatch):
     from celltype import config, pipeline
 
     clouds = _toy_clouds(tmp_path, monkeypatch)
-    model = pipeline.fit_shared_model(clouds, "toy", "s", "axon", min_synapses=100, n_neurons=None,
+    model = pipeline.fit_shared_model(clouds, "toy", "axon", min_synapses=100, n_neurons=None,
                                       seed=0, use_weights=True, n_components=3, fit_points=1000)
-    assert config.shared_model_path("toy", "s", "axon").exists() and model.n_components == 3
+    assert config.shared_model_path("toy", "axon").exists() and model.n_components == 3
     for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "s", "axon", rep, min_synapses=100,
+        pipeline.compute_distances(clouds, "toy", "axon", rep, min_synapses=100,
                                    use_weights=True, seed=0, method="shared", shared_model=model,
                                    shared_alpha=5.0)
-    pipeline.cluster_neurons("toy", "s", "axon", linkage="average", k_values=[2, 3, 4],
+    pipeline.cluster_neurons("toy", "axon", linkage="average", k_values=[2, 3, 4],
                              min_cluster_size=2, k=3)
-    table = pd.read_csv(config.cluster_dir("toy", "s", "axon") / "neurons.csv")
+    table = pd.read_csv(config.cluster_dir("toy", "axon") / "neurons.csv")
     assert adjusted_rand_score(table["cell_type"], table["cluster_k3"]) == pytest.approx(1.0)
-    with open(config.cluster_dir("toy", "s", "axon") / "summary.json") as handle:
+    with open(config.cluster_dir("toy", "axon") / "summary.json") as handle:
         assert json.load(handle)["distance_matrix"] == "replicate_mean"   # no exact.npz for shared
-    with np.load(config.distance_dir("toy", "s", "axon") / "rep000.npz") as data:
+    with np.load(config.distance_dir("toy", "axon") / "rep000.npz") as data:
         assert str(data["method"]) == "shared" and data["theta"].shape == (9, 3)
     # Reloading gives the same model.
-    reloaded = shared.SharedGMM.load(config.shared_model_path("toy", "s", "axon"))
+    reloaded = shared.SharedGMM.load(config.shared_model_path("toy", "axon"))
     assert np.allclose(reloaded.cost, model.cost)
 
 

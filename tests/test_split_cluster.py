@@ -148,7 +148,7 @@ def test_parallel_reproducibility(clouds):
         np.testing.assert_array_equal(serial[key], parallel[key])
 
 
-def test_resume_partial_run_and_manifest_rejects_mismatch(clouds, monkeypatch):
+def test_resume_partial_run_reuses_completed_splits(clouds, monkeypatch):
     params = _params()
     original = split_cluster.fit_split
     calls = []
@@ -159,36 +159,40 @@ def test_resume_partial_run_and_manifest_rejects_mismatch(clouds, monkeypatch):
         return original(*args, **kwargs)
     monkeypatch.setattr(split_cluster, "fit_split", interrupted)
     with pytest.raises(RuntimeError, match="interruption"):
-        pipeline.validate_neurons("microns", "t", "dendrite", points_per_half=[8, 12], outer_reps=2, params=params)
-    directory = next((config.trial_dir("microns", "t") / "validate_dendrite").iterdir())
+        pipeline.validate_neurons("microns", "dendrite", points_per_half=[8, 12], outer_reps=2, params=params)
+    directory = config.validation_dir("microns", "dendrite")
     assert len(list(directory.glob("*.npz"))) == 1 and not (directory / "summary.json").exists()
     before = (directory / "m8_rep000.npz").read_bytes()
     monkeypatch.setattr(split_cluster, "fit_split", original)
-    result = pipeline.validate_neurons("microns", "t", "dendrite", points_per_half=[8, 12], outer_reps=2, params=params)
+    result = pipeline.validate_neurons("microns", "dendrite", points_per_half=[8, 12], outer_reps=2, params=params)
     assert result == directory and (directory / "m8_rep000.npz").read_bytes() == before
     assert len(list(directory.glob("*.npz"))) == 4
     summary = json.loads((directory / "summary.json").read_text())
     assert summary["by_m"]["8"]["ari"]["median"] == 1
     assert summary["options"]["cell_ids"] == clouds.cell_ids.tolist()
     monkeypatch.setattr(split_cluster, "fit_split", lambda *a, **k: pytest.fail("cache was recomputed"))
-    pipeline.validate_neurons("microns", "t", "dendrite", points_per_half=[12, 8], outer_reps=2, params=params)
-    changed = {**summary["options"], "seed": 99}
-    with pytest.raises(ValueError, match="mismatch"):
-        split_cluster.run(gather(clouds, np.arange(len(clouds))), changed, directory)
+    pipeline.validate_neurons("microns", "dendrite", points_per_half=[12, 8], outer_reps=2, params=params)
 
 
-def test_cache_identity_binds_source_cohort_and_parameters(clouds):
-    out = pipeline.validate_neurons("microns", "t", "dendrite", points_per_half=[8], outer_reps=1, params=_params())
-    options = json.loads((out / "config.json").read_text())
-    for key, value in (("seed", 900), ("inner_reps", 4), ("use_weights", False), ("k", 2),
-                       ("cell_ids", options["cell_ids"][:-1]), ("source", {"sha256": "changed"})):
-        assert config.validation_dir("microns", "t", "dendrite", {**options, key: value}) != out
-    fingerprint = config.file_fingerprint(clouds.path)
+def test_validation_recomputes_on_other_settings_or_clouds_but_extends_splits(clouds):
+    out = pipeline.validate_neurons("microns", "dendrite", points_per_half=[8], outer_reps=1, params=_params())
+    assert out == config.validation_dir("microns", "dendrite")
+    first = (out / "m8_rep000.npz").read_bytes()
+    # More half sizes or outer splits extend the run, reusing the saved split.
+    pipeline.validate_neurons("microns", "dendrite", points_per_half=[8, 12], outer_reps=2, params=_params())
+    assert len(list(out.glob("m*_rep*.npz"))) == 4 and (out / "m8_rep000.npz").read_bytes() == first
+    # Other settings recompute every split; checkpoints of the old settings do not survive.
+    pipeline.validate_neurons("microns", "dendrite", points_per_half=[8], outer_reps=1, params=_params(seed=900))
+    assert [p.name for p in out.glob("m*_rep*.npz")] == ["m8_rep000.npz"]
+    assert (out / "m8_rep000.npz").read_bytes() != first
+    assert json.loads((out / "config.json").read_text())["seed"] == 900
+    # Regenerated clouds recompute as well.
     with np.load(clouds.path) as data:
         values = dict(data)
     values["dy"] = values["dy"] + 1
     np.savez(clouds.path, **values)
-    assert config.file_fingerprint(clouds.path)["sha256"] != fingerprint["sha256"]
+    pipeline.validate_neurons("microns", "dendrite", points_per_half=[8], outer_reps=1, params=_params(seed=900))
+    assert json.loads((out / "config.json").read_text())["source"] == config.file_fingerprint(clouds.path)
 
 
 def test_validation_uses_main_selection_and_cap(clouds, monkeypatch):
@@ -202,11 +206,11 @@ def test_validation_uses_main_selection_and_cap(clouds, monkeypatch):
         np.testing.assert_array_equal(flat.mass, expected.mass)
         assert (flat.sizes == 24).all()
     monkeypatch.setattr(split_cluster, "run", inspect)
-    pipeline.validate_neurons("microns", "t", "dendrite", points_per_half=[12, 8], outer_reps=1, params=params)
+    pipeline.validate_neurons("microns", "dendrite", points_per_half=[12, 8], outer_reps=1, params=params)
 
 
 def test_known_stale_distance_source_is_rejected(clouds):
-    directory = config.distance_dir("microns", "t", "dendrite")
+    directory = config.distance_dir("microns", "dendrite")
     np.savez(directory / "rep000.npz", source_sha256="old-source", cell_ids=clouds.cell_ids)
     with pytest.raises(ValueError, match="different clouds"):
         pipeline._distance_provenance(directory, clouds, np.arange(len(clouds)))
@@ -216,17 +220,17 @@ def test_known_stale_distance_source_is_rejected(clouds):
 
 def test_fixed_cohort_fails_instead_of_silently_filtering(clouds):
     with pytest.raises(ValueError, match="never silently changes"):
-        pipeline.validate_neurons("microns", "t", "dendrite", points_per_half=[8, 25], outer_reps=1, params=_params())
+        pipeline.validate_neurons("microns", "dendrite", points_per_half=[8, 25], outer_reps=1, params=_params())
     with pytest.raises(ValueError, match="max-synapses"):
-        pipeline.validate_neurons("microns", "t", "dendrite", points_per_half=[12], outer_reps=1,
+        pipeline.validate_neurons("microns", "dendrite", points_per_half=[12], outer_reps=1,
                                   params=_params(max_synapses=20))
     with pytest.raises(ValueError, match="points only"):
-        pipeline.validate_neurons("microns", "t", "dendrite", points_per_half=[8], outer_reps=1,
+        pipeline.validate_neurons("microns", "dendrite", points_per_half=[8], outer_reps=1,
                                   params=_params(method="shared"))
 
 
 def test_failed_fits_are_saved_and_plotted(clouds):
-    out = pipeline.validate_neurons("microns", "t", "dendrite", points_per_half=[8], outer_reps=1,
+    out = pipeline.validate_neurons("microns", "dendrite", points_per_half=[8], outer_reps=1,
                                     params=_params(k=8, min_cluster_size=6))
     summary = json.loads((out / "summary.json").read_text())
     assert summary["by_m"]["8"]["fit_failure_rate"] == 1
@@ -240,24 +244,29 @@ def test_cli_validate_then_full_fit_and_reference(clouds):
             "--min-synapses", "40", "--n-reps", "2", "--k-max", "3", "--min-cluster-size", "2",
             "--seed", "17", "--validation-points-per-half", "8", "12", "--validation-reps", "1"]
     run_pipeline.main(args)
-    trial = config.trial_name(**_params())
-    full = json.loads((config.cluster_dir("microns", trial, "dendrite") / "summary.json").read_text())
-    path = next((config.trial_dir("microns", trial) / "validate_dendrite").glob("*/summary.json"))
+    assert json.loads((config.trial_dir("microns") / "config.json").read_text()) == _params()
+    full = json.loads((config.cluster_dir("microns", "dendrite") / "summary.json").read_text())
+    path = config.validation_dir("microns", "dendrite") / "summary.json"
     summary = json.loads(path.read_text())
     assert summary["full_fit"]["status"] == "compatible" and summary["full_fit"]["k_full"] == full["chosen_k"] == 3
     assert full["cell_ids"] == summary["options"]["cell_ids"]
     assert summary["full_fit"]["k_full_selection_frequency_by_m"]["8"] == {"count": 1, "n_splits": 1}
-    indices, labels, k = pipeline.load_reference("microns", trial, "dendrite", clouds)
+    indices, labels, k = pipeline.load_reference("microns", "dendrite", clouds)
     assert len(indices) == 12 and k == 3 and np.unique(labels).size == 3
     # A legacy full fit cannot silently inherit validation provenance.
     full.pop("source_sha256")
-    (config.cluster_dir("microns", trial, "dendrite") / "summary.json").write_text(json.dumps(full))
-    pipeline.compare_validation_to_full(path.parent, "microns", trial, "dendrite")
+    (config.cluster_dir("microns", "dendrite") / "summary.json").write_text(json.dumps(full))
+    pipeline.compare_validation_to_full(path.parent, "microns", "dendrite")
     assert json.loads(path.read_text())["full_fit"]["status"] == "full_fit_provenance_unknown"
     full["source_sha256"] = "stale"
-    (config.cluster_dir("microns", trial, "dendrite") / "summary.json").write_text(json.dumps(full))
-    pipeline.compare_validation_to_full(path.parent, "microns", trial, "dendrite")
+    (config.cluster_dir("microns", "dendrite") / "summary.json").write_text(json.dumps(full))
+    pipeline.compare_validation_to_full(path.parent, "microns", "dendrite")
     assert json.loads(path.read_text())["full_fit"]["status"] == "full_fit_mismatch"
+    # Other Stage B/C parameters recompute the outputs in place.
+    run_pipeline.main(args + ["--n-reps", "3"])
+    assert (config.distance_dir("microns", "dendrite") / "rep002.npz").exists()
+    assert json.loads((config.trial_dir("microns") / "config.json").read_text())["n_reps"] == 3
+    assert json.loads(path.read_text())["full_fit"]["status"] == "compatible"
 
 
 @pytest.mark.parametrize("extra", [["--method", "shared"], ["--validation-reps", "0"],

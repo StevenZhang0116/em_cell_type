@@ -13,24 +13,24 @@ afterwards.
 | Stage | Function (`celltype/pipeline.py`) | What it does | Output (`output/<dataset>/`) |
 |---|---|---|---|
 | A | `extract_clouds` | All synapses of each proofread neuron, regardless of partner type, as soma-centred offsets `(dx, dy, dz)` in um with border-compensation weights; lateral cutoff 250 um. `--all-cells` also extracts the dendrite clouds of every cell in the table | `clouds_{axon,dendrite}.npz`, `clouds_dendrite_all.npz` |
-| validate (optional) | `validate_neurons` | Disjoint synapse halves of the same neuron cohort. A selects k using its internal bootstrap consensus; B independently refits consensus at A's k. Reports ARI with coverage, per-cluster overlap, and B distances grouped by A labels only. Points method only; see [split_cluster.md](split_cluster.md) | `trials/<trial>/validate_<side>/<run>/` |
-| B | `compute_exact_distances`, `compute_distances` | `--method points`: the exact 2-Wasserstein distance between the complete soma-relative synapse clouds of two neurons, every synapse with its border-compensation weight as mass, solved as an optimal transport problem (so the in-plane direction of an arbor counts); written once as `exact.npz`. Then each bootstrap replicate: the same clouds with bootstrap multiplicities (n draws with replacement from a neuron's n synapses), giving a distance matrix plus each neuron's self-distance between two independent draws (noise floor). `--method shared`: MW2 between mixing weights over one shared Gaussian mixture per side (`fit_shared_model`), see below | `trials/<trial>/dist_<side>/exact.npz`, `rep<b>.npz`; `trials/<trial>/shared_<side>.npz` |
-| C | `cluster_neurons` | Each replicate is clustered (average linkage) into k major clusters of at least `--min-cluster-size` neurons, smaller clusters becoming outliers (cluster 0); the consensus labels come from clustering the co-clustering matrix. Reports per-replicate ARI against the consensus, PAC (ambiguity), AMI/ARI with dataset labels, confound checks (soma depth, synapse count, border weight, distance to border) | `trials/<trial>/cluster_<side>/` |
-| D (optional) | `assign_neurons` | Only with `--stages ... assign`: turns the consensus clusters into a classifier for neurons that were not clustered, see [assignment.md](assignment.md) | `trials/<trial>/assign_<side>_<query>/` |
+| validate (optional) | `validate_neurons` | Disjoint synapse halves of the same neuron cohort. A selects k using its internal bootstrap consensus; B independently refits consensus at A's k. Reports ARI with coverage, per-cluster overlap, and B distances grouped by A labels only. Points method only; see [split_cluster.md](split_cluster.md) | `trials/validate_<side>/` |
+| B | `compute_exact_distances`, `compute_distances` | `--method points`: the exact 2-Wasserstein distance between the complete soma-relative synapse clouds of two neurons, every synapse with its border-compensation weight as mass, solved as an optimal transport problem (so the in-plane direction of an arbor counts); written once as `exact.npz`. Then each bootstrap replicate: the same clouds with bootstrap multiplicities (n draws with replacement from a neuron's n synapses), giving a distance matrix plus each neuron's self-distance between two independent draws (noise floor). `--method shared`: MW2 between mixing weights over one shared Gaussian mixture per side (`fit_shared_model`), see below | `trials/dist_<side>/exact.npz`, `rep<b>.npz`; `trials/shared_<side>.npz` |
+| C | `cluster_neurons` | Each replicate is clustered (average linkage) into k major clusters of at least `--min-cluster-size` neurons, smaller clusters becoming outliers (cluster 0); the consensus labels come from clustering the co-clustering matrix. Reports per-replicate ARI against the consensus, PAC (ambiguity), AMI/ARI with dataset labels, confound checks (soma depth, synapse count, border weight, distance to border) | `trials/cluster_<side>/` |
+| D (optional) | `assign_neurons` | Only with `--stages ... assign`: turns the consensus clusters into a classifier for neurons that were not clustered, see [assignment.md](assignment.md) | `trials/assign_<side>_<query>/` |
 
-## Trials and options
+## Outputs and options
 
-The clouds are shared; everything else goes to a trial folder named after the Stage B and C
-parameters, e.g.
-`output/microns/trials/n10_rep2_full_min100_weighted_seed20261019_average_k2-3_mcs5/`
-(parameters also saved in its `config.json`), so runs with different parameters never
-overwrite each other.
+The clouds are shared; everything else goes to `output/<dataset>/trials/`, one set of outputs
+per dataset. Its `config.json` records the Stage B and C parameters of the last run; a run
+with other parameters recomputes the stages it runs and overwrites the previous files, so
+files of different settings never mix. With the same parameters, finished outputs are
+skipped unless `--overwrite`.
 
 - `--sides` takes one or both sides (default: both).
 - `--max-synapses N` (points method; default none) caps clouds above N synapses by a uniform
   subsample without replacement, the masses staying the weights. Every synapse is used by
   default; the cap exists because a pair of clouds of n synapses costs about n^2 memory and
-  a little more than n^2 time, see "Cost" below. The trial token is `full`, or `maxN` with a cap.
+  a little more than n^2 time, see "Cost" below.
 - `--n-neurons K` clusters only K randomly chosen neurons per side (same K neurons in every
   replicate); the remaining proofread neurons can be assigned in Stage D (`--query rest`).
 - `--min-border-distance` (um, default 0) excludes neurons whose soma is closer than this to
@@ -68,7 +68,7 @@ overwrite each other.
 - `shared`: parametric with a shared vocabulary (`celltype/shared.py`). One Gaussian mixture
   with `--shared-k` full-covariance components is fitted to the pooled synapses of the
   clustered neurons of a side (`--shared-fit-points` synapses drawn with probability
-  proportional to the border weight; saved as `trials/<trial>/shared_<side>.npz`). Each
+  proportional to the border weight; saved as `trials/shared_<side>.npz`). Each
   neuron is then described by its mixing weights over these fixed components, estimated by
   EM on the weights only with a Dirichlet prior `--shared-alpha * pi` (`pi` = global
   proportions, alpha in synapses), which keeps neurons with few synapses stable by shrinking
@@ -81,11 +81,7 @@ overwrite each other.
 Both methods write the same replicate files. For the points method Stage C takes the exact
 matrix as the distance (tree, noise floor, `distance.npy`) and the replicates for the
 consensus and its stability; for the shared method the replicate mean stands in
-(`distance_matrix` in `summary.json`). Stage D's kNN always uses the point-cloud W2. The
-trial name differs in its third token (`full` vs `shared30_a10`), and
-`scripts/compare_trials.py` compares two trials on the same neurons:
-correlation of the distance matrices, self/nearest ratio, chosen k with stability and PAC,
-AMI with `cell_type`, and the ARI between the two consensus labelings.
+(`distance_matrix` in `summary.json`). Stage D's kNN always uses the point-cloud W2.
 
 ## Cost
 
@@ -107,7 +103,7 @@ few hundred neurons or with the cap and assign the rest in Stage D. The Stage D 
 pair per query and reference) cost the same per pair. Stage A needs about 96 GB of memory,
 Stages B to D a few GB plus the cost matrices of the pairs in flight.
 
-## Stage C outputs (`trials/<trial>/cluster_<side>/`)
+## Stage C outputs (`trials/cluster_<side>/`)
 
 | File | Content |
 |---|---|
