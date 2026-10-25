@@ -18,6 +18,11 @@ Stage D figures:
 Per-neuron GMM figures (celltype/neuron_gmm.py):
   gmm_selection  chosen-k counts and the held-out BIC curve (relative to each neuron's best k)
   gmm_stability  within-neuron vs between-neuron mixture Wasserstein distances, vs synapse count and k
+
+Split-half diagnostics (celltype/split_half.py):
+  split_half_distributions  split ranges per neuron, distributions of medians, endpoint baselines
+  split_half_curves         matched-distance medians vs points per half, with a fixed cohort
+  split_half_covariates     self-distance vs cloud spread and weight concentration
 """
 
 from __future__ import annotations
@@ -51,6 +56,83 @@ def _cluster_names(labels):
 def _save(fig, path):
     fig.savefig(path, dpi=200)
     plt.close(fig)
+
+
+def plot_split_half_distributions(neurons, pairs, path):
+    """Percentiles across splits are ranges, never confidence intervals or testing thresholds."""
+    sizes = sorted(neurons["m"].unique())
+    fig, axes = plt.subplots(len(sizes), 3, figsize=(16, 4 * len(sizes)), squeeze=False,
+                             constrained_layout=True)
+    for row, m in enumerate(sizes):
+        own = neurons[neurons["m"] == m].sort_values("self_median_um")
+        other = pairs[pairs["m"] == m]
+        ax_range, ax_cdf, ax_pair = axes[row]
+        # Keep dense runs readable; sample evenly through the sorted ranks, not just the extremes.
+        ranks = np.unique(np.linspace(0, len(own) - 1, min(len(own), 100)).astype(int))
+        shown = own.iloc[ranks]
+        ax_range.vlines(ranks + 1, shown["self_p05_um"], shown["self_p95_um"], color="C0", alpha=0.5)
+        ax_range.scatter(ranks + 1, shown["self_median_um"], s=9, color="C0")
+        ax_range.set(xlabel="Neuron rank by median self-distance", ylabel="Self W2 (um)",
+                     title=f"m={m}: median and 5-95% split range\nUp to 100 evenly spaced ranks")
+        for values, label, color in ((own["self_median_um"], "Self (per neuron)", "C0"),
+                                      (other["between_median_um"], "Between (per pair)", "C1")):
+            if len(values):
+                ordered = np.sort(values)
+                ax_cdf.step(np.r_[ordered[0], ordered, ordered[-1]],
+                             np.r_[0.0, np.arange(1, len(values) + 1) / len(values), 1.0],
+                             where="post", label=label, color=color)
+        ax_cdf.set(xlabel="Median across splits, W2 (um)", ylabel="Empirical cumulative fraction",
+                   title=f"m={m}: descriptive distributions")
+        ax_cdf.legend(fontsize=8)
+        if len(other):
+            # Both endpoints retain their own baseline; no universal pooled null is assumed.
+            for endpoint, color in (("i", "C0"), ("j", "C2")):
+                ax_pair.scatter(other["between_median_um"], other[f"self_{endpoint}_median_um"],
+                                 s=8, alpha=0.4, color=color, label=f"Endpoint {endpoint}")
+            limit = max(other["between_median_um"].max(), other["self_i_median_um"].max(),
+                        other["self_j_median_um"].max(), 1.0)
+            ax_pair.plot([0, limit], [0, limit], ls="--", color="0.5", lw=1)
+            ax_pair.legend(fontsize=8)
+        else:
+            ax_pair.text(0.5, 0.5, "No between-neuron pairs", ha="center", transform=ax_pair.transAxes)
+        ax_pair.set(xlabel="Pair's median between W2 (um)", ylabel="Endpoint's median self W2 (um)",
+                    title=f"m={m}: each pair vs its endpoints\nDashed line: equal distances, not a test")
+    _save(fig, path)
+
+
+def plot_split_half_curves(neurons, pairs, path):
+    """Population medians and IQRs of per-unit split medians, on the same cohort at every m."""
+    fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
+    for table, column, label, color in ((neurons, "self_median_um", "Self (neurons)", "C0"),
+                                         (pairs, "between_median_um", "Between (pairs)", "C1")):
+        if table.empty:
+            continue
+        sizes = sorted(table["m"].unique())
+        stats = np.array([np.percentile(table.loc[table["m"] == m, column], [25, 50, 75]) for m in sizes])
+        ax.plot(sizes, stats[:, 1], "o-", label=label, color=color)
+        ax.fill_between(sizes, stats[:, 0], stats[:, 2], color=color, alpha=0.2)
+    ax.set(xlabel="Synapses per half (m)", ylabel="W2 (um)",
+           title="Fixed neurons and pairs at every m\nMedians across splits; bands: IQR across neurons/pairs, not CI")
+    ax.legend(fontsize=9)
+    _save(fig, path)
+
+
+def plot_split_half_covariates(neurons, path):
+    """Raw and spread-normalised self variability; weight ESS does not account for dependence."""
+    sizes = sorted(neurons["m"].unique())
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4), constrained_layout=True)
+    for index, m in enumerate(sizes):
+        table = neurons[neurons["m"] == m]
+        color = f"C{index % 10}"
+        axes[0].scatter(table["spread_um"], table["self_median_um"], s=10, alpha=0.6, color=color, label=f"m={m}")
+        axes[1].scatter(table["weight_ess_fraction"], table["self_over_spread"], s=10, alpha=0.6, color=color)
+        axes[2].scatter(table["n_synapses"], table["self_median_um"], s=10, alpha=0.6, color=color)
+    axes[0].set(xlabel="Complete-cloud RMS spread (um)", ylabel="Median self W2 (um)")
+    axes[1].set(xlabel="Weight ESS / observed synapse count", ylabel="Median self W2 / spread",
+                title="Weight concentration only; not independence")
+    axes[2].set(xlabel="Complete-cloud synapse count", ylabel="Median self W2 (um)")
+    axes[0].legend(fontsize=8)
+    _save(fig, path)
 
 
 def plot_tree_heatmap(tree, distance, table, labels, k, path, title):

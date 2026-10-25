@@ -23,6 +23,8 @@ flat files gmm_output/<side>_*.{csv,json,png}; every run overwrites the last.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 
@@ -135,3 +137,15 @@ def assign_dir(dataset, trial, side, query):
 def gmm_dir():
     """The flat folder of the per-neuron GMM analysis (``celltype/neuron_gmm.py``); runs overwrite each other."""
     return _ensure(GMM_OUTPUT_ROOT)
+
+
+def split_half_name(options):
+    """Readable diagnostic name plus a digest of all options and the input-cloud fingerprint."""
+    digest = hashlib.sha256(json.dumps(options, sort_keys=True, allow_nan=False).encode()).hexdigest()[:12]
+    sizes = "-".join(str(m) for m in options["points_per_half"])
+    return f"m{sizes}_rep{options['n_reps']}_n{options['n_neurons'] or 'all'}_{digest}"
+
+
+def split_half_dir(dataset, run, side):
+    """Independent diagnostics beside the main pipeline trials."""
+    return _ensure(dataset_dir(dataset) / "split_half" / run / side)
