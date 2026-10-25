@@ -100,5 +100,11 @@ Disjoint halves can still share branch-level dependence and the same truncation,
 segmentation or detection biases. Stable individual differences can also lie on a
 continuous anatomical spectrum. This diagnostic does not establish discrete cell
 types, quantify alignment-estimation error, or implement an exchangeability-based
-two-sample permutation test. Cluster replication across halves is a separate
-follow-up; the existing full-cloud distances and consensus pipeline are unchanged.
+two-sample permutation test.
+
+## Clustering validation
+
+For validation of the **consensus partition itself**, use the optional
+`run_pipeline.py --stages validate` stage described in [split_cluster.md](split_cluster.md).
+The diagnostics above remain useful for the within-neuron sampling baseline; they
+do not test the reproducibility of a fitted clustering.

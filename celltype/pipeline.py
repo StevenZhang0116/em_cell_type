@@ -6,6 +6,7 @@ stage's files from ``output/<dataset>/`` and writes its own:
 
   A  extract_clouds         clouds_{axon,dendrite}.npz
      extract_all_dendrites  clouds_dendrite_all.npz (every cell, for --query all)
+     validate_neurons      trials/<trial>/validate_<side>/ (optional, disjoint synapse halves)
   B  compute_exact_distances trials/<trial>/dist_<side>/exact.npz (--method points)
      fit_shared_model        trials/<trial>/shared_<side>.npz (--method shared only)
      compute_distances       trials/<trial>/dist_<side>/rep<b>.npz (bootstrap replicates)
@@ -22,11 +23,12 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
-from . import assign, clustering, plotting, shared
+from . import assign, clustering, plotting, shared, split_cluster
 from .clouds import Clouds, build_side, load_cell_table, load_synapses, proofread_cells
 from .config import (SIDES, allocated_cpus, assign_dir, cluster_dir, clouds_path, distance_dir,
-                     shared_model_path)
+                     file_fingerprint, shared_model_path, validation_dir)
 from .distances import alignment_check, bootstrap_replicate, cross, exact_distances, gather, pairwise
+from .split_half import half_sizes
 
 
 def extract_clouds(dataset, lateral_cutoff):
@@ -104,6 +106,89 @@ def select_neurons(clouds, min_synapses, n_neurons, seed, min_border_um=0.0):
     return np.sort(np.random.default_rng(seed).choice(eligible, size=n_neurons, replace=False))
 
 
+def validate_neurons(dataset, trial, side, *, points_per_half, outer_reps, params, overwrite=False):
+    """Optional validation stage, on exactly the full pipeline's selected cohort."""
+    if params["method"] != "points":
+        raise ValueError("validate currently supports --method points only")
+    sizes = half_sizes(points_per_half)
+    if outer_reps < 1 or params["n_reps"] < 1:
+        raise ValueError("outer and inner replicate counts must be positive")
+    clouds = Clouds(clouds_path(dataset, side), align=False)  # never leak the full-cloud frame
+    eligible = select_neurons(clouds, params["min_synapses"], params["n_neurons"], params["seed"], params["min_border"])
+    if eligible.size < 2:
+        raise ValueError("validation needs at least two selected neurons")
+    required = 2 * max(sizes)
+    if np.any(clouds.n_synapses[eligible] < required):
+        raise ValueError(f"selected cohort cannot supply two disjoint halves of {max(sizes)} synapses; "
+                         f"raise --min-synapses to at least {required} or lower --validation-points-per-half; "
+                         "validation never silently changes the full pipeline's cohort")
+    if params["max_synapses"] is not None and params["max_synapses"] < required:
+        raise ValueError(f"--max-synapses must be at least {required} for these validation half sizes")
+    # Retain border weights for independent orientation even under --no-weights.
+    flat = gather(clouds, eligible, True, params["max_synapses"], params["seed"])
+    options = {"version": split_cluster.VERSION, "dataset": dataset, "side": side,
+               "source": file_fingerprint(clouds.path), "cell_ids": clouds.cell_ids[eligible].tolist(),
+               "full_params": params, "points_per_half": sizes, "outer_reps": int(outer_reps),
+               "inner_reps": params["n_reps"], "seed": params["seed"], "align": params["align"],
+               "use_weights": params["use_weights"], "linkage": params["linkage"],
+               "min_cluster_size": params["min_cluster_size"], "k": params["k"],
+               "k_values": list(range(params["k_min"], params["k_max"] + 1))}
+    outdir = validation_dir(dataset, trial, side, options)
+    split_cluster.run(flat, options, outdir, n_jobs=allocated_cpus(), overwrite=overwrite)
+    print(f"Validation outputs in {outdir}")
+    return outdir
+
+
+def compare_validation_to_full(outdir, dataset, trial, side):
+    """Report k_full coverage without using the held-out results to choose k."""
+    path = outdir / "summary.json"
+    summary = json.loads(path.read_text())
+    full_path = cluster_dir(dataset, trial, side) / "summary.json"
+    comparison = {"status": "full_fit_missing", "k_full": None}
+    if full_path.exists():
+        full = json.loads(full_path.read_text())
+        options = summary["options"]
+        comparison["k_full"] = full["chosen_k"]
+        if full.get("source_sha256") is None:
+            comparison["status"] = "full_fit_provenance_unknown"
+        elif (full["source_sha256"] != options["source"]["sha256"]
+              or full.get("cell_ids") != options["cell_ids"]
+              or any(full["run"].get(key) != value for key, value in options["full_params"].items())):
+            comparison["status"] = "full_fit_mismatch"
+        else:
+            comparison.update(status="compatible", note="k coverage is descriptive, not a validation pass/fail decision")
+            comparison["k_full_selection_frequency_by_m"] = {
+                m: {"count": stats["k_a_frequency"].get(str(full["chosen_k"]), 0), "n_splits": stats["n_splits"]}
+                for m, stats in summary["by_m"].items()}
+    summary["full_fit"] = comparison
+    split_cluster.write_json(path, summary)
+
+
+def _source_sha256(clouds):
+    """Hash once per loaded cloud object, not once per bootstrap replicate."""
+    if not hasattr(clouds, "_source_sha256"):
+        clouds._source_sha256 = file_fingerprint(clouds.path)["sha256"]
+    return clouds._source_sha256
+
+
+def _distance_provenance(directory, clouds, eligible):
+    """Reject known stale inputs; mark legacy inputs without fingerprints unknown."""
+    current = _source_sha256(clouds)
+    known = True
+    paths = sorted(directory.glob("rep*.npz"))
+    if (directory / "exact.npz").exists():
+        paths.append(directory / "exact.npz")
+    for path in paths:
+        with np.load(path, allow_pickle=False) as data:
+            if "source_sha256" not in data:
+                known = False
+            elif str(data["source_sha256"]) != current:
+                raise ValueError(f"{path} was computed from different clouds; rerun distances with --overwrite")
+            if "cell_ids" in data and not np.array_equal(data["cell_ids"], clouds.cell_ids[eligible]):
+                raise ValueError(f"{path} has different cell IDs; rerun distances with --overwrite")
+    return current if known else None
+
+
 def fit_shared_model(clouds, dataset, trial, side, *, min_synapses, n_neurons, seed, use_weights,
                      n_components, fit_points, min_border_um=0.0):
     """Stage B (``--method shared``): the side's shared mixture, fitted once per trial."""
@@ -165,6 +250,7 @@ def compute_exact_distances(clouds, dataset, trial, side, *, min_synapses, use_w
                           alignment_check_rotation_min_w2=best)
     path = distance_dir(dataset, trial, side) / "exact.npz"
     np.savez_compressed(path, eligible=eligible, cell_ids=clouds.cell_ids[eligible], method="points",
+                        source_sha256=_source_sha256(clouds),
                         max_synapses=max_synapses or 0, n_synapses=sizes, min_synapses=min_synapses,
                         min_border_um=min_border_um, aligned=clouds.align, use_weights=use_weights,
                         **result)
@@ -197,6 +283,7 @@ def compute_distances(clouds, dataset, trial, side, rep, *, min_synapses, use_we
 
     path = distance_dir(dataset, trial, side) / f"rep{rep:03d}.npz"
     np.savez_compressed(path, eligible=eligible, cell_ids=clouds.cell_ids[eligible],
+                        source_sha256=_source_sha256(clouds),
                         method=method, max_synapses=max_synapses or 0, min_synapses=min_synapses,
                         min_border_um=min_border_um, aligned=clouds.align,
                         use_weights=use_weights, **result)
@@ -214,30 +301,30 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
     exact = clustering.load_exact(directory, eligible)
     print(f"Loaded {matrices.shape[0]} replicates over {eligible.size} neurons"
           + ("; exact distance matrix" if exact is not None else ""))
-    table = clustering.neuron_table(Clouds(clouds_path(dataset, side)), eligible)
+    clouds = Clouds(clouds_path(dataset, side))
+    source_sha256 = _distance_provenance(directory, clouds, eligible)
+    table = clustering.neuron_table(clouds, eligible)
     # The exact matrix of the complete clouds is the distance; the bootstrap
     # replicates give the consensus, its stability and the noise floor. Without
     # an exact matrix (--method shared) the replicate mean stands in.
     distance = matrices.mean(axis=0) if exact is None else exact
 
     nearest, self_mean, noise = clustering.noise_summary(distance, self_distances)
-    replicate_labels = clustering.replicate_cuts(matrices, linkage, k_values, min_cluster_size)
-    consensus, ambiguity = clustering.consensus_clustering(replicate_labels, k_values, linkage,
-                                                           min_cluster_size)
-    stab = clustering.stability(replicate_labels, consensus, k_values)
+    fit = clustering.fit_consensus(matrices, linkage, k_values, min_cluster_size, k)
+    if fit["status"] != "ok":
+        raise ValueError(f"consensus did not reach the requested k; reachable k: {fit['reached']}. "
+                         "Lower k or --min-cluster-size.")
+    consensus, ambiguity, stab = fit["consensus"], fit["pac"], fit["stability"]
+    k_values = list(consensus)
     agreement = clustering.label_agreement(table, consensus, k_values)
     # k whose consensus has fewer than k major clusters repeats a smaller cut; blank it out.
-    reached = [kk for kk in k_values if not np.all(np.isnan(stab[kk]))]
+    reached = fit["reached"]
     for kk in set(k_values) - set(reached):
         ambiguity[kk] = float("nan")
         for column in agreement:
             agreement[column][kk] = {"ami": float("nan"), "ari": float("nan")}
-    if k:
-        chosen_k, k_selection = k, {"rule": "given on the command line", "chosen": k}
-    else:
-        chosen_k, k_selection = clustering.most_stable_k(stab, ambiguity)
-    labels = consensus[chosen_k]
-    together = clustering.co_clustering(replicate_labels, chosen_k)
+    chosen_k, k_selection = fit["chosen_k"], fit["k_selection"]
+    labels, together = fit["labels"], fit["co_clustering"]
     tree = clustering.build_tree(distance, linkage)
 
     outdir = cluster_dir(dataset, trial, side)
@@ -253,6 +340,8 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
         "run": {"dataset": dataset, "trial": trial, "side": side, "linkage": linkage,
                 **(run_info or {})},
         "n_neurons": int(eligible.size),
+        "cell_ids": clouds.cell_ids[eligible].tolist(),
+        "source_sha256": source_sha256,
         "n_replicates": int(matrices.shape[0]),
         "distance_matrix": "replicate_mean" if exact is None else "exact",
         "noise": noise,

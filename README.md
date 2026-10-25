@@ -14,6 +14,7 @@ copied.
 | Stage | What | Output |
 |---|---|---|
 | A | the synapse cloud of every proofread neuron: soma-centred offsets with border-compensation weights | `output/<dataset>/clouds_<side>.npz` |
+| validate (optional) | disjoint synapse halves; choose consensus k using A alone, refit B at that k, report agreement, coverage and held-out separation | `trials/<trial>/validate_<side>/<run>/` |
 | B | neuron-to-neuron distances: the exact W2 between the complete synapse clouds, plus bootstrap replicates for the noise; or MW2 over one shared Gaussian mixture | `trials/<trial>/dist_<side>/` |
 | C | consensus clustering of the replicates, choice of k, checks against the dataset labels and confounds | `trials/<trial>/cluster_<side>/` |
 | D (optional) | assign unclustered neurons to the clusters (kNN on W2 and cluster templates), calibrated by cross-validation | `trials/<trial>/assign_<side>_<query>/` |
@@ -35,6 +36,9 @@ significance tests for discrete cell types.
   stability, outputs.
 - [docs/split_half.md](docs/split_half.md): disjoint halves, matched sample sizes,
   fixed-cohort comparisons, outputs and statistical limits.
+- [docs/split_cluster.md](docs/split_cluster.md): clustering validation through
+  `run_pipeline.py --stages validate`, independent half alignment, A-only selection,
+  resumable checkpoints and a dendrite pilot command.
 
 ## Running (on klone, inside a Slurm allocation)
 
@@ -53,6 +57,7 @@ $PYTHON -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --stages distan
 $PYTHON -u scripts/run_pipeline.py --sides dendrite --n-neurons 500 --max-synapses 2000 --n-reps 5 --stages distances cluster assign --query rest   # dendrites, then Stage D
 $PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --starts 3           # per-neuron GMMs
 $PYTHON -u scripts/analyze_split_half.py --sides axon --n-neurons 200 --points-per-half 100 200 --n-reps 100 --between-pairs 1000  # split-half diagnostics
+$PYTHON -u scripts/run_pipeline.py --sides dendrite --stages validate --n-neurons 100 --min-synapses 400 --validation-points-per-half 200 --validation-reps 10 --n-reps 5 --align  # clustering validation
 ```
 
 Every trial is named after its Stage B and C parameters, so runs with different settings
@@ -73,8 +78,9 @@ celltype/    library code (no command-line parsing)
   pipeline.py    the four stages (Stage D optional)
   neuron_gmm.py  per-neuron GMMs with the weighted fitter imported from ../mixture
   split_half.py  disjoint, sample-matched self/between W2 diagnostics
+  split_cluster.py  held-out validation of bootstrap consensus clustering
 scripts/     run_pipeline.py, compare_trials.py, fit_neuron_gmms.py, analyze_split_half.py
-docs/        pipeline.md, assignment.md, neuron_gmm.md, split_half.md
+docs/        pipeline.md, assignment.md, neuron_gmm.md, split_half.md, split_cluster.md
 tests/       pytest unit tests
 jobs/        env.sh (job environment: conda env, 1 BLAS thread) and the unit-test Slurm script
 output/      pipeline outputs per dataset (clouds, trials); ignored by git
