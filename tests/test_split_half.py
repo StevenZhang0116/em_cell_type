@@ -77,6 +77,20 @@ def test_pairs_cover_upper_triangle_and_allow_zero_pairs():
     assert split_half.sample_pairs(6, 0, 2).shape == (0, 2)
 
 
+def test_batched_split_distances_match_one_split_at_a_time(tmp_path):
+    clouds = _clouds(tmp_path / "clouds.npz")
+    flat = distances.gather(clouds, np.arange(4))
+    pairs = split_half.sample_pairs(4, 3, 9)
+    within, between = split_half.split_distances(flat, clouds.cell_ids, 10, pairs, seed=9, n_reps=3, n_jobs=2)
+    assert within.shape == (3, 4) and between.shape == (3, 3)
+    for rep in range(3):
+        a, b = split_half.split_clouds(flat, clouds.cell_ids, 10, seed=9, rep=rep)
+        assert np.allclose(within[rep], [distances.w2(*a.cloud(i), *b.cloud(i)) for i in range(4)])
+        assert np.allclose(between[rep], [distances.w2(*a.cloud(i), *b.cloud(j)) for i, j in pairs])
+    empty = np.empty((0, 2))   # a float array, as np.empty gives it, must not break the integer indexing
+    assert split_half.split_distances(flat, clouds.cell_ids, 10, empty, seed=9, n_reps=2, n_jobs=1)[1].shape == (2, 0)
+
+
 def test_matched_distances_detect_known_spatial_separation(tmp_path):
     clouds = _clouds(tmp_path / "clouds.npz")
     result = split_half.analyze(clouds, np.arange(4), [20, 10], n_reps=5, n_pairs=100, seed=4)

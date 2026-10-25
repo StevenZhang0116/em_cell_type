@@ -56,6 +56,10 @@ For L sizes, B repetitions, N neurons and P selected pairs, this computes
 has an m-by-m cost matrix; the complete selected clouds and all output distances
 are also held in memory. CPU parallelism follows `SLURM_CPUS_PER_TASK` (one CPU
 outside Slurm), with BLAS threads capped by `jobs/env.sh` as elsewhere in this repo.
+For each m, all B repetitions are dispatched in **one** joblib call: the `B * (N + P)`
+problems are cut into 4 x CPUs blocks of nearly equal size and every worker draws the
+halves it needs itself, so the scheduling overhead does not grow with B and the
+result does not depend on the CPU count.
 
 ## Outputs
 

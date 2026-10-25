@@ -19,7 +19,7 @@ import pandas as pd
 from joblib import Parallel, delayed
 
 from .clustering import neuron_table
-from .distances import FlatClouds, gather, paired, w2
+from .distances import FlatClouds, gather, w2
 
 
 def _integer(value, name, minimum=1):
@@ -60,30 +60,74 @@ def sample_pairs(n_neurons, n_pairs, seed):
     return np.column_stack([i, j])
 
 
+def _half(flat, cell_ids, row, m, *, seed, rep):
+    """Halves A and B of cloud ``row`` as ``(points_a, mass_a, points_b, mass_b)``.
+
+    The masses are the cloud's weights of the chosen synapses, not yet normalised
+    per half (``w2`` and ``FlatClouds.from_list`` do that).
+    """
+    points, mass = flat.cloud(row)
+    a, b = split_indices(len(points), m, seed=seed, cell_id=cell_ids[row], rep=int(rep))
+    return points[a], mass[a], points[b], mass[b]
+
+
 def split_clouds(flat, cell_ids, m, *, seed, rep):
     """Split already aligned clouds uniformly; original weights enter only as OT masses."""
-    points_a, points_b, mass_a, mass_b = [], [], [], []
-    for row, cell_id in enumerate(cell_ids):
-        points, mass = flat.cloud(row)
-        a, b = split_indices(len(points), m, seed=seed, cell_id=cell_id, rep=rep)
-        points_a.append(points[a])
-        points_b.append(points[b])
-        mass_a.append(mass[a])
-        mass_b.append(mass[b])
-    return FlatClouds.from_list(points_a, mass_a), FlatClouds.from_list(points_b, mass_b)
+    halves = [_half(flat, cell_ids, row, m, seed=seed, rep=rep) for row in range(len(flat))]
+    return (FlatClouds.from_list([h[0] for h in halves], [h[1] for h in halves]),
+            FlatClouds.from_list([h[2] for h in halves], [h[3] for h in halves]))
 
 
-def _pair_block(a, b, pairs):
-    return [w2(*a.cloud(i), *b.cloud(j)) for i, j in pairs]
+def _distance_block(flat, cell_ids, m, seed, units):
+    """One W2 per row ``(rep, i, j)`` of ``units``: half A of neuron i against half B of neuron j
+    in split ``rep`` (``j == i`` is the within-neuron distance).
+
+    The worker draws the halves it needs itself and keeps only those of the
+    current repetition (``units`` are sorted by repetition).
+    """
+    values = np.empty(len(units))
+    halves, current = {}, None
+    for k, (rep, i, j) in enumerate(units):
+        if rep != current:
+            halves, current = {}, rep
+        for row in (i, j):
+            if row not in halves:
+                halves[row] = _half(flat, cell_ids, row, m, seed=seed, rep=rep)
+        points_a, mass_a, _, _ = halves[i]
+        _, _, points_b, mass_b = halves[j]
+        values[k] = w2(points_a, mass_a, points_b, mass_b)
+    return values
 
 
-def pair_distances(a, b, pairs, n_jobs):
-    """One m-vs-m W2(A_i, B_j) per selected pair; no all-pairs matrix."""
-    if len(pairs) == 0:
-        return np.empty(0, dtype=float)
-    blocks = np.array_split(pairs, min(len(pairs), 4 * n_jobs))
-    values = Parallel(n_jobs=n_jobs)(delayed(_pair_block)(a, b, block) for block in blocks)
-    return np.concatenate(values)
+def split_distances(flat, cell_ids, m, pairs, *, seed, n_reps, n_jobs, log=None):
+    """Within and between distances of every split at one m: arrays ``(n_reps, N)`` and ``(n_reps, P)``.
+
+    All repetitions go through one joblib call: the ``n_reps * (N + P)`` OT
+    problems, each m by m and hence of about the same cost, are cut into
+    ``4 * n_jobs`` blocks of consecutive (repetition, comparison) units. A split
+    depends only on seed, cell id, repetition and m, so the result is the same
+    for every ``n_jobs``.
+    """
+    n = len(flat)
+    rows = np.arange(n, dtype=np.int64)
+    pairs = np.asarray(pairs, dtype=np.int64).reshape(-1, 2)
+    comparisons = np.concatenate([np.column_stack([rows, rows]), pairs])   # (N + P, 2): within, then between
+    units = np.concatenate([np.column_stack([np.full(len(comparisons), rep), comparisons])
+                            for rep in range(n_reps)])
+    blocks = np.array_split(units, min(len(units), 4 * n_jobs))
+    if log is not None:
+        log(f"m={m}: {n_reps} splits x ({n} self + {len(pairs)} between) distances "
+            f"in {len(blocks)} blocks on {n_jobs} CPUs")
+    results = Parallel(n_jobs=n_jobs, return_as="generator")(
+        delayed(_distance_block)(flat, cell_ids, m, seed, block) for block in blocks)
+    values, done = [], 0
+    for block, result in zip(blocks, results):
+        values.append(result)
+        done += len(block)
+        if log is not None:
+            log(f"m={m}: {done}/{len(units)} distances")
+    values = np.concatenate(values).reshape(n_reps, len(comparisons))
+    return values[:, :n], values[:, n:]
 
 
 def analyze(clouds, indices, points_per_half, *, n_reps=100, n_pairs=2000,
@@ -124,12 +168,8 @@ def analyze(clouds, indices, points_per_half, *, n_reps=100, n_pairs=2000,
         spread.append(np.sqrt(mass @ ((x - mass @ x) ** 2).sum(axis=1)))
         ess.append(1.0 / (mass @ mass))
     for level, m in enumerate(sizes):
-        for rep in range(n_reps):
-            a, b = split_clouds(flat, cell_ids, m, seed=seed, rep=rep)
-            within[level, rep] = paired(a, b, n_jobs)
-            between[level, rep] = pair_distances(a, b, pairs, n_jobs)
-            if log is not None:
-                log(f"m={m}: split {rep + 1}/{n_reps}, {len(indices)} self and {len(pairs)} between distances")
+        within[level], between[level] = split_distances(flat, cell_ids, m, pairs, seed=seed,
+                                                         n_reps=n_reps, n_jobs=n_jobs, log=log)
     return {"m_values": np.asarray(sizes), "eligible": indices, "cell_ids": cell_ids,
             "pairs": pairs, "self_distance": within, "between_distance": between,
             "spread_um": np.asarray(spread), "weight_ess": np.asarray(ess),
