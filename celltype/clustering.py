@@ -237,8 +237,8 @@ def most_stable_k(stab, ambiguity, k_min=3, ari_tolerance=0.03, pac_tolerance=0.
     Among valid k >= ``k_min`` (k=2 is trivially stable), keep those whose
     median ARI is within ``ari_tolerance`` of the best, then those whose PAC
     is within ``pac_tolerance`` of the lowest PAC in that set, and take the
-    largest: a flat stability curve means the extra clusters are real stable
-    splits, so resolution is preferred unless ambiguity rises.
+    largest. This heuristic prefers resolution unless ambiguity rises; internal
+    stability alone does not establish discrete biological cell types.
     """
     valid = [k for k in stab if not np.all(np.isnan(stab[k]))]
     candidates = [k for k in valid if k >= k_min] or valid
@@ -251,6 +251,42 @@ def most_stable_k(stab, ambiguity, k_min=3, ari_tolerance=0.03, pac_tolerance=0.
                             f"PAC <= lowest PAC among those + {pac_tolerance}",
                     "best_median_ari": best, "within_ari_tolerance": near,
                     "lowest_pac_among_those": float(lowest_pac), "chosen": chosen}
+
+
+def fit_consensus(matrices, method, k_values, min_size, k=None):
+    """Shared consensus fit for full clouds and either validation half.
+
+    Automatic selection uses only these replicate matrices. With fixed k no
+    selection rule runs. An unreachable k is an explicit status, not a smaller
+    clustering silently presented as a successful fit. Raw consensus cuts remain
+    available for diagnostics, including when no candidate k is reachable.
+    """
+    matrices = np.asarray(matrices)
+    if (matrices.ndim != 3 or matrices.shape[0] < 1 or matrices.shape[1] < 2
+            or matrices.shape[1] != matrices.shape[2] or not np.isfinite(matrices).all()):
+        raise ValueError("consensus needs finite replicate matrices of shape (B, N, N), B >= 1, N >= 2")
+    values = sorted(set(k_values) | ({k} if k is not None else set()))
+    if (not values or any(not isinstance(kk, (int, np.integer)) or kk < 2 for kk in values)
+            or not isinstance(min_size, (int, np.integer)) or min_size < 1):
+        raise ValueError("k values must be integers >= 2 and min_size a positive integer")
+    values = [int(kk) for kk in values]
+    cuts = replicate_cuts(matrices, method, values, min_size)
+    consensus, ambiguity = consensus_clustering(cuts, values, method, min_size)
+    stab = stability(cuts, consensus, values)
+    reached = [kk for kk in values if not np.all(np.isnan(stab[kk]))]
+    for kk in set(values) - set(reached):
+        ambiguity[kk] = float("nan")
+    if k is not None:
+        chosen, selection = int(k), {"rule": "given on the command line", "chosen": int(k)}
+    elif reached:
+        chosen, selection = most_stable_k(stab, ambiguity)
+    else:
+        chosen, selection = None, {"rule": "no reachable candidate k", "chosen": None}
+    labels = np.zeros(matrices.shape[1], dtype=int) if chosen is None else consensus[chosen]
+    status = "ok" if chosen in reached else "unreachable_k"
+    return {"status": status, "chosen_k": chosen, "k_selection": selection, "reached": reached,
+            "labels": labels, "consensus": consensus, "stability": stab, "pac": ambiguity,
+            "co_clustering": None if chosen is None else co_clustering(cuts, chosen)}
 
 
 def neuron_stability(together, labels):

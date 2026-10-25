@@ -4,7 +4,8 @@ Run the Whole Pipeline
 Stage A (extract clouds), then for every side: Stage B (exact distances between
 the complete clouds, plus bootstrap replicates) and Stage C (clustering and checks). Stage D (assigning the
 neurons that were not clustered) is optional and only runs when "assign" is
-listed in --stages. See celltype/pipeline.py for the stages.
+listed in --stages. An optional "validate" stage runs disjoint split-half
+consensus validation before Stage B; see docs/split_cluster.md.
 
 Everything except the clouds is written to output/<dataset>/trials/<trial>/,
 where <trial> encodes the Stage B and C parameters (e.g.
@@ -23,6 +24,7 @@ Example::
     python -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --stages assign --query rest
     python -u scripts/run_pipeline.py --n-neurons 1000 --method shared --stages distances cluster
     python -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --align --min-border-distance 50
+    python -u scripts/run_pipeline.py --sides dendrite --stages validate --min-synapses 400 --n-neurons 100 --validation-points-per-half 200 --validation-reps 10 --n-reps 5
 """
 
 from __future__ import annotations
@@ -41,17 +43,17 @@ from celltype.config import (DATASETS, SIDES, assign_dir, cluster_dir, clouds_pa
                              trial_dir, trial_name)
 
 
-STAGES = ("extract", "distances", "cluster", "assign")
-DEFAULT_STAGES = ("extract", "distances", "cluster")   # Stage D only on request
+STAGES = ("extract", "validate", "distances", "cluster", "assign")
+DEFAULT_STAGES = ("extract", "distances", "cluster")   # validation and Stage D only on request
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", choices=sorted(DATASETS), default="microns")
     parser.add_argument("--stages", nargs="+", choices=STAGES, default=list(DEFAULT_STAGES),
-                        help="stages to run (default: extract distances cluster); Stage D runs "
-                             "only when 'assign' is listed")
+                        help="stages to run (default: extract distances cluster); validate and assign "
+                             "run only when explicitly listed; execution follows the stage order")
     parser.add_argument("--sides", nargs="+", choices=SIDES, default=list(SIDES))
     parser.add_argument("--overwrite", action="store_true",
                         help="recompute outputs that already exist")
@@ -95,6 +97,11 @@ def main():
     parser.add_argument("--no-weights", action="store_true",
                         help="ignore border-compensation weights")
     parser.add_argument("--seed", type=int, default=20261019)
+    # Optional split-half clustering validation, before Stage B
+    parser.add_argument("--validation-points-per-half", nargs="+", type=int, default=[200],
+                        help="[validate] synapses per disjoint half; same cohort for every size")
+    parser.add_argument("--validation-reps", type=int, default=10,
+                        help="[validate] outer splits; --n-reps sets the inner bootstrap count per half")
     # Stage C
     parser.add_argument("--linkage", choices=("average", "complete"), default="average")
     parser.add_argument("--k-min", type=int, default=2)
@@ -103,7 +110,8 @@ def main():
                         help="clusters smaller than this are labelled outliers (cluster 0) "
                              "and do not count towards k")
     parser.add_argument("--k", type=int, default=None,
-                        help="k for the detailed figures and for Stage D (default: most stable k >= 3)")
+                        help="fixed consensus k for validation, Stage C and Stage D "
+                             "(default: most stable k >= 3, falling back to reachable k)")
     # Stage D
     parser.add_argument("--query", choices=("rest", "all", "none"), default="rest",
                         help="neurons to assign: the proofread neurons not clustered (rest), "
@@ -119,7 +127,22 @@ def main():
     parser.add_argument("--reject-quantile", type=float, default=0.95,
                         help="queries beyond this quantile of held-out reference distances "
                              "(or below 1 - it in template score) get label 0")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.n_reps < 1 or args.k_min < 2 or args.k_max < args.k_min or args.min_cluster_size < 1:
+        parser.error("need --n-reps >= 1, 2 <= --k-min <= --k-max and --min-cluster-size >= 1")
+    if args.k is not None and args.k < 2:
+        parser.error("--k must be >= 2")
+    if args.seed < 0 or args.min_synapses < 1 or (args.n_neurons is not None and args.n_neurons < 2):
+        parser.error("need --seed >= 0, --min-synapses >= 1 and --n-neurons >= 2")
+    if args.max_synapses is not None and args.max_synapses < 1:
+        parser.error("--max-synapses must be positive")
+    if "validate" in args.stages:
+        if args.method != "points":
+            parser.error("validate currently supports --method points only")
+        if args.validation_reps < 1 or min(args.validation_points_per_half) < 1:
+            parser.error("validation sizes and repeat counts must be positive")
+        if args.max_synapses is not None and args.max_synapses < 2 * max(args.validation_points_per_half):
+            parser.error("--max-synapses must be >= twice the largest --validation-points-per-half")
     start = time.time()
 
     if "extract" in args.stages:
@@ -149,6 +172,12 @@ def main():
 
     for side in args.sides:
         fresh = False   # an upstream output was recomputed in this run
+        validation = None
+        if "validate" in args.stages:
+            print(f"== Validation: {side} | disjoint synapse halves, bootstrap consensus")
+            validation = pipeline.validate_neurons(
+                args.dataset, trial, side, points_per_half=args.validation_points_per_half,
+                outer_reps=args.validation_reps, params=params, overwrite=args.overwrite)
         if "distances" in args.stages:
             clouds = Clouds(clouds_path(args.dataset, side), align=args.align)
             shared_model = None
@@ -189,6 +218,9 @@ def main():
                     k_values=list(range(args.k_min, args.k_max + 1)),
                     min_cluster_size=args.min_cluster_size, k=args.k, run_info=params)
                 reclustered = True
+
+        if validation is not None:
+            pipeline.compare_validation_to_full(validation, args.dataset, trial, side)
 
         if "assign" in args.stages:
             tag = f"{side} | query {args.query}"

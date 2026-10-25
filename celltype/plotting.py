@@ -58,6 +58,51 @@ def _save(fig, path):
     plt.close(fig)
 
 
+def plot_split_cluster(table, path):
+    """Outer-split values without error bars implying independent replicates."""
+    sizes = sorted(table["points_per_half"].unique())
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4.5), constrained_layout=True)
+    for index, m in enumerate(sizes):
+        rows = table[table["points_per_half"] == m]
+        color = plt.get_cmap("tab10")(index % 10)
+        axes[0].scatter(rows["joint_coverage"], rows["ari"], color=color, alpha=0.65, label=f"m={m}")
+        # Deterministic jitter is cosmetic, never part of an analysis.
+        x = index + np.linspace(-0.12, 0.12, len(rows))
+        axes[1].scatter(x, rows["delta_um"], color=color, alpha=0.65)
+        counts = rows.loc[rows["status_a"] == "ok", "k_a"].value_counts().sort_index()
+        axes[2].plot(counts.index, counts / len(rows), "o-", color=color, label=f"m={m}")
+    axes[0].set(xlabel="Fraction accepted in both halves", ylabel="ARI on jointly accepted neurons",
+                xlim=(-0.03, 1.03), ylim=(-1.03, 1.03), title="Agreement and coverage")
+    axes[0].legend(loc="lower left")
+    axes[1].axhline(0, color="0.6", linewidth=1)
+    axes[1].set(xticks=range(len(sizes)), xticklabels=[str(m) for m in sizes], xlabel="Synapses per half",
+                ylabel="Median between - median within (um)", title="B distances, A labels only")
+    axes[2].set(xlabel="k chosen using A only", ylabel="Fraction of all outer splits", ylim=(-0.03, 1.03),
+                title="Selection frequency (failures omitted)")
+    observed_k = sorted(table["k_a"].dropna().astype(int).unique())
+    if observed_k:
+        axes[2].set(xticks=observed_k, xlim=(min(observed_k) - 0.5, max(observed_k) + 0.5))
+    failures = int((table["status"] != "ok").sum())
+    fig.suptitle(f"Split-half consensus validation | {failures}/{len(table)} ARIs not evaluable | descriptive splits")
+    _save(fig, path)
+
+
+def plot_split_cluster_contingency(labels_a, labels_b, path, m, rep):
+    """Include rejection as 'out', while the numerical matching excludes it."""
+    ca, cb = np.unique(labels_a), np.unique(labels_b)
+    counts = np.array([[np.sum((labels_a == a) & (labels_b == b)) for b in cb] for a in ca])
+    fig, ax = plt.subplots(figsize=(max(5, 0.45 * len(cb) + 2), max(4, 0.4 * len(ca) + 2)), constrained_layout=True)
+    shown = ax.imshow(counts, cmap="Blues", aspect="auto")
+    fig.colorbar(shown, ax=ax, label="Neurons")
+    ax.set(xticks=range(len(cb)), yticks=range(len(ca)), xticklabels=_cluster_names(cb),
+           yticklabels=_cluster_names(ca), xlabel="B consensus label", ylabel="A consensus label",
+           title=f"Representative split: m={m}, repeat={rep}\nLabels are not matched by numeric ID")
+    if max(len(ca), len(cb)) <= 20:
+        for (i, j), value in np.ndenumerate(counts):
+            ax.text(j, i, str(value), ha="center", va="center", color="white" if value > counts.max() / 2 else "black")
+    _save(fig, path)
+
+
 def plot_split_half_distributions(neurons, pairs, path):
     """Percentiles across splits are ranges, never confidence intervals or testing thresholds."""
     sizes = sorted(neurons["m"].unique())

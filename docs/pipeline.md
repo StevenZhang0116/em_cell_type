@@ -13,6 +13,7 @@ afterwards.
 | Stage | Function (`celltype/pipeline.py`) | What it does | Output (`output/<dataset>/`) |
 |---|---|---|---|
 | A | `extract_clouds` | All synapses of each proofread neuron, regardless of partner type, as soma-centred offsets `(dx, dy, dz)` in um with border-compensation weights; lateral cutoff 250 um. `--all-cells` also extracts the dendrite clouds of every cell in the table | `clouds_{axon,dendrite}.npz`, `clouds_dendrite_all.npz` |
+| validate (optional) | `validate_neurons` | Disjoint synapse halves of the same neuron cohort. A selects k using its internal bootstrap consensus; B independently refits consensus at A's k. Reports ARI with coverage, per-cluster overlap, and B distances grouped by A labels only. Points method only; see [split_cluster.md](split_cluster.md) | `trials/<trial>/validate_<side>/<run>/` |
 | B | `compute_exact_distances`, `compute_distances` | `--method points`: the exact 2-Wasserstein distance between the complete soma-relative synapse clouds of two neurons, every synapse with its border-compensation weight as mass, solved as an optimal transport problem (so the in-plane direction of an arbor counts); written once as `exact.npz`. Then each bootstrap replicate: the same clouds with bootstrap multiplicities (n draws with replacement from a neuron's n synapses), giving a distance matrix plus each neuron's self-distance between two independent draws (noise floor). `--method shared`: MW2 between mixing weights over one shared Gaussian mixture per side (`fit_shared_model`), see below | `trials/<trial>/dist_<side>/exact.npz`, `rep<b>.npz`; `trials/<trial>/shared_<side>.npz` |
 | C | `cluster_neurons` | Each replicate is clustered (average linkage) into k major clusters of at least `--min-cluster-size` neurons, smaller clusters becoming outliers (cluster 0); the consensus labels come from clustering the co-clustering matrix. Reports per-replicate ARI against the consensus, PAC (ambiguity), AMI/ARI with dataset labels, confound checks (soma depth, synapse count, border weight, distance to border) | `trials/<trial>/cluster_<side>/` |
 | D (optional) | `assign_neurons` | Only with `--stages ... assign`: turns the consensus clusters into a classifier for neurons that were not clustered, see [assignment.md](assignment.md) | `trials/<trial>/assign_<side>_<query>/` |
@@ -47,12 +48,20 @@ overwrite each other.
 - `--min-cluster-size` (default 5): clusters with fewer neurons are reported as outliers
   (cluster 0, "out" in figures) and do not count towards k.
 - The reported k (when `--k` is not given) is the largest k whose median per-replicate ARI is
-  within 0.03 of the best and whose PAC is within 0.05 of the lowest PAC among those: on a flat
-  stability curve the extra clusters are real stable splits, so resolution is preferred unless
-  ambiguity rises. The rule and its candidates are recorded under `k_selection` in `summary.json`.
-- `--stages` selects stages from `extract distances cluster assign`; the default is the first
-  three, so Stage D runs only when `assign` is listed. Finished outputs are skipped unless
-  `--overwrite`, so an interrupted job can just be resubmitted.
+  within 0.03 of the best and whose PAC is within 0.05 of the lowest PAC among those. This
+  heuristic prefers resolution unless ambiguity rises; it does not establish discrete
+  biological types. Candidates >= 3 are preferred, with a fallback to reachable candidates.
+  The rule and its candidates are recorded under `k_selection` in `summary.json`.
+  Full-cloud and split-half fits share `clustering.fit_consensus`. An unreachable fixed
+  `--k` raises an error in Stage C and is recorded as a failure in validation.
+- `--stages` selects stages from `extract validate distances cluster assign`; execution
+  follows that order regardless of argument order. The default remains `extract distances
+  cluster`. Validation and assignment run only when explicitly listed. Finished outputs
+  are skipped unless `--overwrite`; validation resumes individual completed outer splits.
+- New distance files carry the Stage-A file's SHA-256. Stage C rejects known stale
+  distance inputs and records provenance in its summary. Legacy caches still load, but
+  their full fit cannot be linked to validation as verified: rerun `distances cluster`
+  with `--overwrite` to establish provenance.
 
 ## Two ways to compare neurons (Stage B `--method`)
 

@@ -8,6 +8,7 @@ Input tables are the ones used by the Stage-1 GMM fit in
   clouds_<side>.npz                              (Stage A, shared)
   clouds_dendrite_all.npz                        (Stage A with --all-cells)
   trials/<trial>/config.json                     (run parameters)
+  trials/<trial>/validate_<side>/<run>/           (optional split-half clustering validation)
   trials/<trial>/shared_<side>.npz               (Stage B, --method shared only)
   trials/<trial>/dist_<side>/exact.npz           (Stage B, --method points: complete clouds)
   trials/<trial>/dist_<side>/rep<b>.npz          (Stage B, bootstrap replicates)
@@ -149,3 +150,20 @@ def split_half_name(options):
 def split_half_dir(dataset, run, side):
     """Independent diagnostics beside the main pipeline trials."""
     return _ensure(dataset_dir(dataset) / "split_half" / run / side)
+
+
+def file_fingerprint(path):
+    """Content identity used to bind validation caches to their Stage-A source."""
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return {"filename": Path(path).name, "size_bytes": Path(path).stat().st_size,
+            "sha256": digest.hexdigest()}
+
+
+def validation_dir(dataset, trial, side, options):
+    """One validation run per source, cohort and complete set of settings."""
+    digest = hashlib.sha256(json.dumps(options, sort_keys=True, allow_nan=False).encode()).hexdigest()[:16]
+    sizes = "-".join(str(m) for m in options["points_per_half"])
+    return _ensure(trial_dir(dataset, trial) / f"validate_{side}" / f"m{sizes}_rep{options['outer_reps']}_{digest}")

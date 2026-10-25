@@ -28,6 +28,8 @@ arrays plus ``offsets`` so that neuron ``i`` owns ``offsets[i]:offsets[i+1]``.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pyarrow.compute as pc
@@ -182,10 +184,26 @@ def canonical_rotation(dx, dz, weight, offsets):
     return cos, sin
 
 
+def align_points(points, weight, offsets):
+    """Canonical rotation of each flat cloud, estimated only from the supplied points.
+
+    This shares Clouds' orientation rule; validation calls it independently on
+    each half. The input arrays are never modified.
+    """
+    points = np.asarray(points, dtype=float)
+    cos, sin = canonical_rotation(points[:, 0], points[:, 2], weight, offsets)
+    cos, sin = np.repeat(cos, np.diff(offsets)), np.repeat(sin, np.diff(offsets))
+    rotated = points.copy()
+    rotated[:, 0] = cos * points[:, 0] + sin * points[:, 2]
+    rotated[:, 2] = -sin * points[:, 0] + cos * points[:, 2]
+    return rotated
+
+
 class Clouds:
     """Read-only view of one side's saved clouds; ``align=True`` canonically rotates every cloud."""
 
     def __init__(self, path, align=False):
+        self.path = Path(path)
         with np.load(path, allow_pickle=False) as data:
             self.meta = {key: data[key] for key in data.files}
         self.cell_ids = self.meta["cell_ids"]
