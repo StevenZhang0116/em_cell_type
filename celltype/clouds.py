@@ -6,9 +6,7 @@ outgoing for the axon side (``status_axon == "extended"``), incoming for the
 dendrite side (``full_dendrite``) -- regardless of the partner's cell type.
 This deliberately differs from the "local" GMM fit in mixture_all.py, which
 keeps only synapses onto/from one partner type and would leak the dataset
-labels into the anatomy features. The same functions also extract the
-dendrite clouds of every cell in the table (``--all-cells``), which Stage D
-can assign to the clusters.
+labels into the anatomy features.
 
 Coordinates follow mixture_all.py: ``pt_position_*_trafo`` in nm, converted
 to micrometres; ``pt_position_y_trafo`` is cortical depth and x/z span the

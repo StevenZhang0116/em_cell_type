@@ -69,7 +69,7 @@ def gather(clouds, indices, use_weights=True, max_synapses=None, seed=0):
     ``max_synapses`` caps the largest clouds by a uniform subsample without
     replacement (the masses stay the weights, so the measure is unbiased). The
     subsample of a neuron depends on ``seed`` and its cell id only, so the exact
-    matrix, every replicate and Stage D see the same points of it.
+    matrix and every replicate see the same points of it.
     """
     points, masses = [], []
     for index in indices:
@@ -159,18 +159,6 @@ def pairwise(flat, n_jobs):
     blocks = balanced_row_blocks(len(flat), 4 * n_jobs, flat.sizes)
     results = Parallel(n_jobs=n_jobs)(delayed(_pairs_block)(block, flat) for block in blocks)
     return assemble_symmetric(len(flat), results)
-
-
-def _cross_block(rows, query, reference):
-    return np.array([[w2(*query.cloud(i), *reference.cloud(j)) for j in range(len(reference))]
-                     for i in rows], dtype=np.float32)
-
-
-def cross(query, reference, n_jobs):
-    """Exact W2 between every query and every reference cloud, (Q, R)."""
-    results = Parallel(n_jobs=n_jobs)(delayed(_cross_block)(block, query, reference)
-                                      for block in _blocks(len(query), 4 * n_jobs))
-    return np.vstack(results)
 
 
 def _paired_block(rows, a, b):

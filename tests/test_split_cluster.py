@@ -152,21 +152,26 @@ def test_resume_partial_run_reuses_completed_splits(clouds, monkeypatch):
     params = _params()
     original = split_cluster.fit_split
     calls = []
-    def interrupted(*args, **kwargs):
+    def counted(*args, **kwargs):
         calls.append(1)
         if len(calls) == 2:
             raise RuntimeError("simulated interruption")
         return original(*args, **kwargs)
-    monkeypatch.setattr(split_cluster, "fit_split", interrupted)
+    monkeypatch.setattr(split_cluster, "fit_split", counted)
     with pytest.raises(RuntimeError, match="interruption"):
         pipeline.validate_neurons("microns", "dendrite", points_per_half=[8, 12], outer_reps=2, params=params)
     directory = config.validation_dir("microns", "dendrite")
-    assert len(list(directory.glob("*.npz"))) == 1 and not (directory / "summary.json").exists()
-    before = (directory / "m8_rep000.npz").read_bytes()
-    monkeypatch.setattr(split_cluster, "fit_split", original)
+    assert [p.name for p in directory.glob("*.npz")] == ["m8.npz"] and not (directory / "summary.json").exists()
+    with np.load(directory / "m8.npz", allow_pickle=False) as data:
+        first = data["distance_a"].copy()
+        assert first.shape == (1, 12, 12) and data["labels_b"].shape == (1, 12)
+    # The resumed run computes only the three missing splits and keeps the saved one.
     result = pipeline.validate_neurons("microns", "dendrite", points_per_half=[8, 12], outer_reps=2, params=params)
-    assert result == directory and (directory / "m8_rep000.npz").read_bytes() == before
-    assert len(list(directory.glob("*.npz"))) == 4
+    assert result == directory and len(calls) == 5
+    assert sorted(p.name for p in directory.glob("*.npz")) == ["m12.npz", "m8.npz"]
+    with np.load(directory / "m8.npz", allow_pickle=False) as data:
+        assert data["distance_a"].shape == (2, 12, 12) and np.array_equal(data["distance_a"][:1], first)
+        assert [r["rep"] for r in json.loads(str(data["records"]))] == [0, 1]
     summary = json.loads((directory / "summary.json").read_text())
     assert summary["by_m"]["8"]["ari"]["median"] == 1
     assert summary["options"]["cell_ids"] == clouds.cell_ids.tolist()
@@ -175,16 +180,26 @@ def test_resume_partial_run_reuses_completed_splits(clouds, monkeypatch):
 
 
 def test_validation_recomputes_on_other_settings_or_clouds_but_extends_splits(clouds):
+    def saved(name):
+        with np.load(out / name, allow_pickle=False) as data:
+            return data["distance_a"].copy()
+
     out = pipeline.validate_neurons("microns", "dendrite", points_per_half=[8], outer_reps=1, params=_params())
     assert out == config.validation_dir("microns", "dendrite")
-    first = (out / "m8_rep000.npz").read_bytes()
+    first = saved("m8.npz")
+    assert first.shape == (1, 12, 12)
     # More half sizes or outer splits extend the run, reusing the saved split.
     pipeline.validate_neurons("microns", "dendrite", points_per_half=[8, 12], outer_reps=2, params=_params())
-    assert len(list(out.glob("m*_rep*.npz"))) == 4 and (out / "m8_rep000.npz").read_bytes() == first
-    # Other settings recompute every split; checkpoints of the old settings do not survive.
+    assert sorted(p.name for p in out.glob("m*.npz")) == ["m12.npz", "m8.npz"]
+    assert saved("m8.npz").shape == (2, 12, 12) and np.array_equal(saved("m8.npz")[:1], first)
+    # Fewer splits than saved: the extra ones stay in the file and are left out of the summary.
+    pipeline.validate_neurons("microns", "dendrite", points_per_half=[8], outer_reps=1, params=_params())
+    assert saved("m8.npz").shape == (2, 12, 12)
+    assert json.loads((out / "summary.json").read_text())["by_m"]["8"]["n_splits"] == 1
+    # Other settings recompute every split; files of the old settings do not survive.
     pipeline.validate_neurons("microns", "dendrite", points_per_half=[8], outer_reps=1, params=_params(seed=900))
-    assert [p.name for p in out.glob("m*_rep*.npz")] == ["m8_rep000.npz"]
-    assert (out / "m8_rep000.npz").read_bytes() != first
+    assert [p.name for p in out.glob("m*.npz")] == ["m8.npz"]
+    assert saved("m8.npz").shape == (1, 12, 12) and not np.array_equal(saved("m8.npz"), first)
     assert json.loads((out / "config.json").read_text())["seed"] == 900
     # Regenerated clouds recompute as well.
     with np.load(clouds.path) as data:
@@ -239,7 +254,7 @@ def test_failed_fits_are_saved_and_plotted(clouds):
     assert (out / "validation.png").exists()
 
 
-def test_cli_validate_then_full_fit_and_reference(clouds):
+def test_cli_validate_then_full_fit(clouds):
     args = ["--dataset", "microns", "--sides", "dendrite", "--stages", "cluster", "validate", "distances",
             "--min-synapses", "40", "--n-reps", "2", "--k-max", "3", "--min-cluster-size", "2",
             "--seed", "17", "--validation-points-per-half", "8", "12", "--validation-reps", "1"]
@@ -251,8 +266,6 @@ def test_cli_validate_then_full_fit_and_reference(clouds):
     assert summary["full_fit"]["status"] == "compatible" and summary["full_fit"]["k_full"] == full["chosen_k"] == 3
     assert full["cell_ids"] == summary["options"]["cell_ids"]
     assert summary["full_fit"]["k_full_selection_frequency_by_m"]["8"] == {"count": 1, "n_splits": 1}
-    indices, labels, k = pipeline.load_reference("microns", "dendrite", clouds)
-    assert len(indices) == 12 and k == 3 and np.unique(labels).size == 3
     # A legacy full fit cannot silently inherit validation provenance.
     full.pop("source_sha256")
     (config.cluster_dir("microns", "dendrite") / "summary.json").write_text(json.dumps(full))

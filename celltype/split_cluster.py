@@ -25,8 +25,8 @@ from .split_half import split_clouds
 VERSION = 1
 
 # Settings that make two validation runs incompatible. The half sizes and the
-# number of outer splits may grow (new checkpoints are added); every other
-# option must match for the saved checkpoints to be reused.
+# number of outer splits may grow (new splits are appended to the m files);
+# every other option must match for the saved splits to be reused.
 IDENTITY = ("version", "dataset", "side", "source", "cell_ids", "full_params", "inner_reps",
             "seed", "use_weights", "linkage", "min_cluster_size", "k", "k_values")
 
@@ -145,27 +145,32 @@ def write_json(path, value):
     os.replace(temporary, path)
 
 
-def _save_checkpoint(path, result, options, m, rep):
-    record = {**result["record"], "points_per_half": m, "rep": rep, "options": options}
+ARRAYS = ("distance_a", "distance_b", "labels_a", "labels_b")
+
+
+def _save_splits(path, m, options, splits):
+    """Rewrite ``m<m>.npz`` atomically with every finished outer split of this m, stacked along axis 0."""
     temporary = path.with_suffix(".tmp")
     with open(temporary, "wb") as handle:
-        np.savez_compressed(handle, **{key: value for key, value in result.items() if key != "record"},
-                            record=json.dumps(record, allow_nan=False))
+        np.savez_compressed(handle, points_per_half=m, options=json.dumps(options, allow_nan=False),
+                            records=json.dumps([split["record"] for split in splits], allow_nan=False),
+                            **{key: np.stack([split[key] for split in splits]) for key in ARRAYS})
     os.replace(temporary, path)
-    return record
 
 
-def _load_checkpoint(path, options, m, rep):
+def _load_splits(path, options, m):
+    """The outer splits saved in ``m<m>.npz``, one dict (arrays and record) per split, in order."""
     with np.load(path, allow_pickle=False) as data:
-        record = json.loads(str(data["record"]))
-        if (_identity(record["options"]) != _identity(options) or record["points_per_half"] != m
-                or record["rep"] != rep):
+        if int(data["points_per_half"]) != m or _identity(json.loads(str(data["options"]))) != _identity(options):
             raise ValueError(f"checkpoint settings mismatch: {path}")
-        n = len(options["cell_ids"])
-        for key, shape in (("distance_a", (n, n)), ("distance_b", (n, n)), ("labels_a", (n,)), ("labels_b", (n,))):
-            if data[key].shape != shape or not np.isfinite(data[key]).all():
-                raise ValueError(f"invalid {key} in {path}")
-    return record
+        records = json.loads(str(data["records"]))
+        arrays = {key: data[key] for key in ARRAYS}
+    count, n = len(records), len(options["cell_ids"])
+    for key, shape in (("distance_a", (count, n, n)), ("distance_b", (count, n, n)),
+                       ("labels_a", (count, n)), ("labels_b", (count, n))):
+        if arrays[key].shape != shape or not np.isfinite(arrays[key]).all():
+            raise ValueError(f"invalid {key} in {path}")
+    return [{**{key: arrays[key][i] for key in ARRAYS}, "record": record} for i, record in enumerate(records)]
 
 
 def describe(values):
@@ -189,28 +194,30 @@ def run(flat, options, outdir, *, n_jobs=1, overwrite=False):
             print(f"validation settings or clouds changed ({', '.join(changed)}); recomputing every split",
                   flush=True)
             overwrite = True
-    if overwrite:                       # never leave checkpoints of other settings behind
-        for stale in outdir.glob("m*_rep*.npz"):
+    if overwrite:                       # never leave splits of other settings behind
+        for stale in outdir.glob("m*.npz"):
             stale.unlink()
     write_json(manifest, options)
-    # The completion marker is rebuilt only after every requested repeat succeeds.
+    # The completion marker is rebuilt only after every requested split succeeds.
     (outdir / "summary.json").unlink(missing_ok=True)
     records, matches = [], []
     for m in options["points_per_half"]:
-        for rep in range(options["outer_reps"]):
-            path = outdir / f"m{m}_rep{rep:03d}.npz"
-            if path.exists() and not overwrite:
-                record = _load_checkpoint(path, options, m, rep)
-            else:
-                print(f"validation m={m}, split {rep + 1}/{options['outer_reps']}", flush=True)
-                a, b = split_clouds(flat, np.asarray(options["cell_ids"]), m, seed=options["seed"], rep=rep)
-                result = fit_split(a, b, n_reps=options["inner_reps"], seed=[options["seed"], 29, m, rep],
-                                   n_jobs=n_jobs, linkage=options["linkage"], k_values=options["k_values"],
-                                   min_cluster_size=options["min_cluster_size"], k=options["k"])
-                record = _save_checkpoint(path, result, options, m, rep)
+        path = outdir / f"m{m}.npz"
+        splits = _load_splits(path, options, m) if path.exists() and not overwrite else []
+        for rep in range(len(splits), options["outer_reps"]):
+            print(f"validation m={m}, split {rep + 1}/{options['outer_reps']}", flush=True)
+            a, b = split_clouds(flat, np.asarray(options["cell_ids"]), m, seed=options["seed"], rep=rep)
+            result = fit_split(a, b, n_reps=options["inner_reps"], seed=[options["seed"], 29, m, rep],
+                               n_jobs=n_jobs, linkage=options["linkage"], k_values=options["k_values"],
+                               min_cluster_size=options["min_cluster_size"], k=options["k"])
+            result["record"] = {**result["record"], "points_per_half": m, "rep": rep}
+            splits.append(result)
+            _save_splits(path, m, options, splits)      # after every split, so an interrupted run resumes
+        for split in splits[:options["outer_reps"]]:    # a file may hold more splits than requested now
+            record = split["record"]
             records.append(record)
-            matches.extend({"points_per_half": m, "rep": rep, "fit_status": record["metrics"]["status"], **match}
-                           for match in record["matches"])
+            matches.extend({"points_per_half": m, "rep": record["rep"], "fit_status": record["metrics"]["status"],
+                            **match} for match in record["matches"])
     rows = [{"points_per_half": r["points_per_half"], "rep": r["rep"],
              "k_a": r["fit_a"]["chosen_k"], "status_a": r["fit_a"]["status"], "status_b": r["fit_b"]["status"],
              **r["metrics"]} for r in records]
@@ -238,8 +245,8 @@ def run(flat, options, outdir, *, n_jobs=1, overwrite=False):
     # First evaluable repeat is reproducible and is not chosen for a high ARI.
     representative = next((r for r in records if r["metrics"]["status"] == "ok"), records[0])
     m, rep = representative["points_per_half"], representative["rep"]
-    with np.load(outdir / f"m{m}_rep{rep:03d}.npz", allow_pickle=False) as data:
-        plotting.plot_split_cluster_contingency(data["labels_a"], data["labels_b"],
+    with np.load(outdir / f"m{m}.npz", allow_pickle=False) as data:
+        plotting.plot_split_cluster_contingency(data["labels_a"][rep], data["labels_b"][rep],
                                                 outdir / "representative_contingency.png", m, rep)
     summary["representative"] = {"points_per_half": m, "rep": rep, "rule": "first evaluable repeat, else first repeat"}
     write_json(outdir / "summary.json", summary)

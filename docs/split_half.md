@@ -2,7 +2,7 @@
 
 `scripts/analyze_split_half.py` reads Stage-A clouds and measures how much a neuron's
 spatial synapse distribution changes when it is represented by two disjoint subsets.
-It is an optional analysis beside Stages B-D, implemented in `celltype/split_half.py`;
+It is an optional analysis beside Stages B and C, implemented in `celltype/split_half.py`;
 it does not require a clustering run or the per-neuron GMM fits.
 
 ## Sampling and distances

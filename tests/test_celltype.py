@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from celltype import assign, clustering, distances, shared, templates
+from celltype import clustering, distances, shared
 from celltype.clouds import Clouds, build_side
 
 
@@ -73,16 +73,13 @@ def test_balanced_row_blocks_cover_every_row_once(n, n_blocks):
     assert np.array_equal(np.concatenate(sized), np.arange(n))
 
 
-def test_pairwise_cross_and_paired_agree_with_w2():
+def test_pairwise_and_paired_agree_with_w2():
     rng = np.random.default_rng(4)
     flat = distances.FlatClouds.from_list([rng.normal(size=(n, 3)) for n in (30, 20, 25, 40, 35, 30)])
-    matrix = distances.pairwise(flat, n_jobs=1)
+    matrix = distances.pairwise(flat, n_jobs=2)
     assert np.allclose(matrix, matrix.T) and np.allclose(np.diag(matrix), 0.0)
     assert matrix[1, 4] == pytest.approx(distances.w2(*flat.cloud(1), *flat.cloud(4)), rel=1e-6)
-    other = distances.FlatClouds.from_list([rng.normal(size=(n, 3)) for n in (10, 15)])
-    across = distances.cross(other, flat, n_jobs=2)
-    assert across.shape == (2, 6)
-    assert across[1, 3] == pytest.approx(distances.w2(*other.cloud(1), *flat.cloud(3)), rel=1e-6)
+    assert np.allclose(matrix, distances.pairwise(flat, n_jobs=1))
     assert np.allclose(distances.paired(flat, flat, n_jobs=1), 0.0, atol=1e-9)
 
 
@@ -134,20 +131,20 @@ def test_build_side_csr_follows_cell_order_and_cutoff(tmp_path):
 # Pipeline
 # ---------------------------------------------------------------------------
 
-def _toy_clouds(tmp_path, monkeypatch, per_group=3):
-    """Three groups of ``per_group`` neurons with distinct arbors, saved as dataset "toy"."""
+def _toy_clouds(tmp_path, monkeypatch):
+    """Three groups of three neurons with distinct arbors, saved as dataset "toy"."""
     from celltype import config
 
     monkeypatch.setattr(config, "OUTPUT_ROOT", tmp_path)
     rng = np.random.default_rng(6)
     n, centres = 150, [(0.0, -100.0), (100.0, 0.0), (0.0, 100.0)]
     dx, dy, dz = [], [], []
-    for cx, cy in np.repeat(centres, per_group, axis=0):
+    for cx, cy in np.repeat(centres, 3, axis=0):
         dx.append(rng.normal(cx, 15, n))
         dy.append(rng.normal(cy, 15, n))
         dz.append(rng.normal(0, 15, n))
-    total = 3 * per_group
-    groups = np.repeat(["a", "b", "c"], per_group)
+    total = 9
+    groups = np.repeat(["a", "b", "c"], 3)
     np.savez(config.clouds_path("toy", "axon"), cell_ids=np.arange(total),
              offsets=np.arange(total + 1) * n,
              dx=np.concatenate(dx), dy=np.concatenate(dy), dz=np.concatenate(dz),
@@ -210,54 +207,6 @@ def test_pipeline_random_subset_is_shared_across_replicates(tmp_path, monkeypatc
     assert list(distances.gather(clouds, eligible).sizes) == [150] * 6
     # K at least the number of eligible neurons means all of them.
     assert pipeline.select_neurons(clouds, 100, 50, seed=0).size == 9
-
-
-def test_assign_stage_recovers_toy_groups(tmp_path, monkeypatch):
-    """Stage D: held-out references and the three unclustered neurons get their group's cluster."""
-    from celltype import config, pipeline
-
-    clouds = _toy_clouds(tmp_path, monkeypatch, per_group=5)
-    pipeline.compute_exact_distances(clouds, "toy", "axon", min_synapses=100, use_weights=True,
-                                     seed=0, n_neurons=12)
-    for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "axon", rep, min_synapses=100,
-                                   use_weights=True, seed=0, n_neurons=12)
-    pipeline.cluster_neurons("toy", "axon", linkage="average", k_values=[2, 3, 4],
-                             min_cluster_size=2, k=3)
-    pipeline.assign_neurons("toy", "axon", query="rest", min_synapses=100, use_weights=True,
-                            seed=0, n_neighbours=3, template_k_max=2, template_points=2000,
-                            cv_folds=2, reject_quantile=1.0, k=3)
-
-    outdir = config.assign_dir("toy", "axon", "rest")
-    with open(outdir / "summary.json") as handle:
-        summary = json.load(handle)
-    assert summary["n_reference"] == 12 and summary["n_queries"] == 3
-    for method in assign.METHODS:
-        assert summary["cross_validation"][method]["accuracy"] == pytest.approx(1.0)
-        assert summary["cross_validation"][method]["accuracy_with_reject"] == pytest.approx(1.0)
-    assert summary["calibration"]["temperature"] >= 1.0
-
-    reference = pd.read_csv(outdir / "reference_cv.csv")
-    queries = pd.read_csv(outdir / "queries.csv")
-    assert len(queries) == 3 and (reference["consensus"] > 0).all()
-    group_of = reference.groupby("consensus")["cell_type"].agg(lambda s: s.mode()[0])
-    for method in assign.METHODS:
-        prob = queries[[f"{method}_prob_{c}" for c in (1, 2, 3)]].to_numpy()
-        assert np.allclose(prob.sum(axis=1), 1.0)
-        assert [group_of[c] for c in prob.argmax(axis=1) + 1] == queries["cell_type"].tolist()
-    for name in ("templates.json", "cv_confusion.png", "cv_reliability.png", "templates.png",
-                 "queries.png"):
-        assert (outdir / name).exists()
-
-    # query="none": calibration and validation only.
-    pipeline.assign_neurons("toy", "axon", query="none", min_synapses=100, use_weights=True,
-                            seed=0, n_neighbours=3, template_k_max=2, template_points=2000,
-                            cv_folds=2, reject_quantile=1.0, k=3)
-    outdir = config.assign_dir("toy", "axon", "none")
-    with open(outdir / "summary.json") as handle:
-        summary = json.load(handle)
-    assert summary["n_queries"] == 0 and summary["queries"] is None
-    assert not (outdir / "queries.csv").exists() and (outdir / "reference_cv.csv").exists()
 
 
 def test_record_params_reports_changed_parameters(tmp_path, monkeypatch):
@@ -346,74 +295,6 @@ def test_consensus_and_stability_on_agreeing_replicates():
     together = clustering.co_clustering(cuts, 2)
     stab = clustering.neuron_stability(together, consensus[2])
     assert np.isnan(stab[10]) and np.allclose(stab[:10], 1.0)
-
-
-# ---------------------------------------------------------------------------
-# Templates and assignment
-# ---------------------------------------------------------------------------
-
-def _two_layer_cloud(rng, n=4000, centre=(20.0, -10.0)):
-    """Two depth components sharing one lateral centre, with different lateral spreads."""
-    half = n // 2
-    depth = np.concatenate([rng.normal(-150, 20, half), rng.normal(100, 40, n - half)])
-    lateral_sd = np.concatenate([np.full(half, 30.0), np.full(n - half, 60.0)])
-    dx, dz = rng.normal(centre[0], lateral_sd), rng.normal(centre[1], lateral_sd)
-    return np.column_stack([dx, depth, dz])
-
-
-def test_cylindrical_gmm_recovers_components_and_selects_k():
-    points = _two_layer_cloud(np.random.default_rng(7))
-    model, bics = templates.fit_template(points, np.ones(len(points)), [1, 2, 3, 4], seed=0)
-    assert model.n_components == 2 and bics[2] < bics[1]
-    assert np.allclose(model.centre, [20.0, -10.0], atol=5)
-    order = np.argsort(model.depth_mean)
-    assert np.allclose(model.depth_mean[order], [-150, 100], atol=8)
-    assert np.allclose(np.sqrt(model.lateral_var[order]), [30, 60], rtol=0.15)
-    assert np.allclose(np.sqrt(model.depth_var[order]), [20, 40], rtol=0.2)
-    assert np.allclose(model.weights, 0.5, atol=0.05)
-
-
-def test_cylindrical_gmm_log_density_matches_closed_form():
-    from scipy.stats import norm
-
-    model = templates.CylindricalGMM.from_dict({
-        "n_components": 1, "weights": [1.0], "centre": [0.0, 0.0],
-        "lateral_var": [25.0], "depth_mean": [10.0], "depth_var": [100.0]})
-    point = np.array([[3.0, 4.0, 4.0]])   # dx=3, dy=4, dz=4
-    expected = norm.logpdf(3, 0, 5) + norm.logpdf(4, 0, 5) + norm.logpdf(4, 10, 10)
-    assert model.log_density(point)[0] == pytest.approx(expected)
-    assert model.n_parameters() == 5
-    assert templates.CylindricalGMM.from_dict(model.to_dict()).to_dict() == model.to_dict()
-
-
-def test_knn_posterior_votes_by_distance_and_pads_missing_neighbours():
-    distances_qr = np.array([[1.0, 5.0, 1.2], [5.0, 1.0, 5.0]])
-    labels = np.array([1, 2, 1])
-    d, lab = assign.nearest_references(distances_qr, labels, n_neighbours=5)
-    assert d.shape == (2, 5) and np.isnan(d[0, 3:]).all()
-    assert lab[0].tolist() == [1, 1, 2, 0, 0]
-    prob = assign.knn_posterior(d, lab, n_clusters=2, tau=1.0)
-    assert np.allclose(prob.sum(axis=1), 1.0)
-    assert prob[0, 0] > 0.9 and prob[1, 1] > 0.9
-    # Very large tau: plain majority vote over the available neighbours.
-    assert np.allclose(assign.knn_posterior(d, lab, 2, tau=1e12)[0], [2 / 3, 1 / 3])
-
-
-def test_calibrate_picks_the_nll_minimiser():
-    scores = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]])
-    grid = np.array([0.1, 1.0, 10.0])
-    posterior = lambda t: assign.softmax_posterior(scores, t)  # noqa: E731
-    best, curve = assign.calibrate(posterior, grid, np.array([1, 2, 1]))
-    assert best == 10.0 and curve[0.1] > curve[1.0] > curve[10.0]
-    assert assign.calibrate(posterior, grid, np.array([2, 1, 2]))[0] == 0.1
-    assert assign.expected_calibration_error(posterior(10.0), np.array([1, 2, 1])) < 0.01
-
-
-def test_stratified_folds_spread_every_label():
-    labels = np.array([0, 0, 1, 1, 1, 1, 2, 2, 2, 2])
-    fold = assign.stratified_folds(labels, 2, np.random.default_rng(0))
-    for value in (0, 1, 2):
-        assert set(fold[labels == value]) == {0, 1}
 
 
 # ---------------------------------------------------------------------------

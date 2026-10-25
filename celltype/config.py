@@ -6,14 +6,12 @@ Input tables are the ones used by the Stage-1 GMM fit in
 ``output/<dataset>/``:
 
   clouds_<side>.npz                              (Stage A, shared)
-  clouds_dendrite_all.npz                        (Stage A with --all-cells)
   trials/config.json                             (Stage B/C parameters of the last run)
   trials/validate_<side>/                        (optional split-half clustering validation)
   trials/shared_<side>.npz                       (Stage B, --method shared only)
   trials/dist_<side>/exact.npz                   (Stage B, --method points: complete clouds)
   trials/dist_<side>/rep<b>.npz                  (Stage B, bootstrap replicates)
   trials/cluster_<side>/...                      (Stage C)
-  trials/assign_<side>_<query>/                  (Stage D, optional)
   split_half/<side>/                             (scripts/analyze_split_half.py)
 
 One set of outputs per dataset. ``trials/config.json`` and the validation and
@@ -75,14 +73,13 @@ def dataset_dir(dataset):
     return _ensure(OUTPUT_ROOT / dataset)
 
 
-def clouds_path(dataset, side, scope="proofread"):
-    """``scope="all"``: the clouds of every cell in the table, not only proofread ones."""
-    suffix = "" if scope == "proofread" else "_all"
-    return dataset_dir(dataset) / f"clouds_{side}{suffix}.npz"
+def clouds_path(dataset, side):
+    """The Stage A clouds of the proofread neurons of one side."""
+    return dataset_dir(dataset) / f"clouds_{side}.npz"
 
 
 def trial_dir(dataset):
-    """Every Stage B to D and validation output of the dataset."""
+    """Every Stage B, Stage C and validation output of the dataset."""
     return _ensure(dataset_dir(dataset) / "trials")
 
 
@@ -97,10 +94,6 @@ def distance_dir(dataset, side):
 
 def cluster_dir(dataset, side):
     return _ensure(trial_dir(dataset) / f"cluster_{side}")
-
-
-def assign_dir(dataset, side, query):
-    return _ensure(trial_dir(dataset) / f"assign_{side}_{query}")
 
 
 def gmm_dir():

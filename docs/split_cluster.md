@@ -23,7 +23,6 @@ python -u scripts/run_pipeline.py \
 To include the final full-cloud fit, change only `--stages` to
 `validate distances cluster`. Add `extract` first if clouds have not been built
 (Stage A needs the original Feather tables and substantially more memory).
-`--stages ... assign` retains the existing downstream assignment behavior.
 On klone, source `jobs/env.sh` and use `$PYTHON` as in the other examples.
 
 `--validation-reps` counts **outer disjoint splits**. `--n-reps` counts the inner
@@ -118,25 +117,26 @@ independent evaluation for confirmatory claims.
 Results live in `trials/validate_<side>/`, beside the full fit. Its `config.json`
 records the algorithm version, every statistical setting, the source-file SHA-256
 and the ordered cell IDs. A later call that changes any of these recomputes every
-split (the old checkpoints are removed first); more half sizes or more outer splits
+split (the old split files are removed first); more half sizes or more outer splits
 extend the run instead, reusing the splits already saved. CPU count does not change
 the result.
 
 | File | Contents |
 |---|---|
 | `config.json` | Settings, full-fit parameters, input identity and cohort |
-| `m<m>_rep<r>.npz` | Exact A/B distance matrices and consensus labels in cohort order; JSON `record` includes A selection, B's frozen k, inner ARI/PAC, fit status, held-out metrics and cluster matches |
+| `m<m>.npz` | All outer splits of one half size, stacked along the first axis: exact A/B distance matrices `(split, neuron, neuron)` and consensus labels `(split, neuron)` in cohort order; the JSON `records` list holds, per split, A's selection, B's frozen k, inner ARI/PAC, fit status, held-out metrics and cluster matches |
 | `repeats.csv` | Per-split k, status, ARI, coverage, both outlier rates, separation and pair counts |
 | `cluster_matches.csv` | Per-split matched clusters, membership counts, Jaccard and retained fraction |
 | `summary.json` | Per-m descriptive medians/quartiles, failure/unevaluable rates, A k frequencies and comparison with the full fit |
 | `validation.png` | ARI versus coverage, held-out separation, A-only k selection frequencies |
 | `representative_contingency.png` | First evaluable repeat (else first repeat), including an explicit outlier row/column when present; not selected for best agreement |
 
-Checkpoints are written atomically after each **outer** repeat. Rerunning the same
-command reuses completed repeats and regenerates tables and figures; an interrupted
-repeat restarts from its beginning. `--overwrite` recomputes them. A mismatched or
-invalid checkpoint raises an error rather than silently reusing different data.
-Changed inputs or parameters recompute the run, as described above.
+After every **outer** split, `m<m>.npz` is rewritten atomically with all the splits of
+that half size finished so far. Rerunning the same command resumes after the last
+finished split and regenerates tables and figures; an interrupted split restarts from
+its beginning. `--overwrite` recomputes everything. A mismatched or invalid file raises
+an error rather than silently reusing different data. Changed inputs or parameters
+recompute the run, as described above.
 
 The full fit is linked only when its recorded source hash, ordered cohort and run
 parameters agree. Old distance caches without a fingerprint remain loadable but
@@ -151,14 +151,14 @@ Their quartiles describe split sensitivity, **not confidence intervals**. Neuron
 pairs are dependent. No Gaussian z-score, pairwise significance test, FDR, or
 biological-null p-value is produced. Stable partitions can also occur along
 continuous anatomical gradients. This analysis does not by itself demonstrate
-discrete cell types or validate assignments to new neurons. Synapse dependence
+discrete cell types. Synapse dependence
 along branches is not modeled; branch-aware resampling and independent biological
 replication remain separate questions.
 
 The synthetic test suite checks recovery, A/B isolation,
 shared estimator compatibility, outliers and impossible k, label permutation,
 held-out pair selection, parallel reproducibility, cache identity, interruption
-and resume, and the combined CLI with full-fit/assignment-reference compatibility:
+and resume, and the combined CLI with the full fit:
 
 ```bash
 python -m pytest tests -q

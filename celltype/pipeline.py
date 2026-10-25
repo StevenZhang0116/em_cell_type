@@ -5,7 +5,6 @@ The stages run by ``scripts/run_pipeline.py``. Each stage reads the previous
 stage's files from ``output/<dataset>/`` and writes its own:
 
   A  extract_clouds           clouds_{axon,dendrite}.npz
-     extract_all_dendrites    clouds_dendrite_all.npz (every cell, for --query all)
      record_params            trials/config.json (the Stage B/C parameters of the last run)
      validate_neurons         trials/validate_<side>/ (optional: --stages ... validate;
                               disjoint synapse halves of the Stage B/C cohort, see split_cluster.py)
@@ -13,7 +12,6 @@ stage's files from ``output/<dataset>/`` and writes its own:
      fit_shared_model         trials/shared_<side>.npz (--method shared only)
      compute_distances        trials/dist_<side>/rep<b>.npz (bootstrap replicates)
   C  cluster_neurons          trials/cluster_<side>/
-  D  assign_neurons           trials/assign_<side>_<query>/ (optional: --stages ... assign)
 """
 
 from __future__ import annotations
@@ -22,14 +20,13 @@ import json
 import time
 
 import numpy as np
-import pandas as pd
 import pyarrow as pa
 
-from . import assign, clustering, plotting, shared, split_cluster
+from . import clustering, plotting, shared, split_cluster
 from .clouds import Clouds, build_side, load_cell_table, load_synapses, proofread_cells
-from .config import (SIDES, allocated_cpus, assign_dir, cluster_dir, clouds_path, distance_dir,
-                     file_fingerprint, shared_model_path, trial_dir, validation_dir)
-from .distances import bootstrap_replicate, cross, exact_distances, gather, pairwise
+from .config import (SIDES, allocated_cpus, cluster_dir, clouds_path, distance_dir, file_fingerprint,
+                     shared_model_path, trial_dir, validation_dir)
+from .distances import bootstrap_replicate, exact_distances, gather
 from .split_half import half_sizes
 
 
@@ -59,28 +56,6 @@ def extract_clouds(dataset, lateral_cutoff):
         np.savez_compressed(path, **output)
         print(f"Saved {path}")
     print(f"Stage A time {time.time() - start:.0f}s")
-
-
-def extract_all_dendrites(dataset, lateral_cutoff):
-    """Stage A, optional: incoming synapses of every cell in the table, proofread or not.
-
-    These clouds are the ``--query all`` set of Stage D. Non-proofread dendrites
-    may be truncated or merged, so their assignments carry that caveat.
-    """
-    pa.set_cpu_count(allocated_cpus())
-    pa.set_io_thread_count(allocated_cpus())
-    start = time.time()
-    cells = load_cell_table(dataset)
-    print(f"[dendrite, all cells] {len(cells)} cells")
-    synapses = load_synapses(dataset, np.array([], dtype=np.int64), cells["pt_root_id"].to_numpy())
-    print(f"Loaded {len(synapses)} synapses ({time.time() - start:.0f}s)")
-    output = build_side(cells, synapses, "dendrite", lateral_cutoff)
-    counts = np.diff(output["offsets"])
-    print(f"[dendrite, all cells] synapses per cell: median {np.median(counts):.0f}, "
-          f"min {counts.min()}, max {counts.max()}; {int(np.sum(counts == 0))} cells without synapses")
-    path = clouds_path(dataset, "dendrite", "all")
-    np.savez_compressed(path, **output)
-    print(f"Saved {path} ({time.time() - start:.0f}s)")
 
 
 def eligible_neurons(clouds, min_synapses, min_border_um=0.0):
@@ -382,140 +357,3 @@ def cluster_neurons(dataset, side, *, linkage, k_values, min_cluster_size,
                       ("n_neurons", "noise", "chosen_k", "cluster_sizes",
                        "distance_vs_covariate_spearman")}, indent=2))
     print(f"Outputs in {outdir}")
-
-
-# ---------------------------------------------------------------------------
-# Stage D
-# ---------------------------------------------------------------------------
-
-def load_reference(dataset, side, clouds, k=None):
-    """Clustered neurons (indices into ``clouds``) and their consensus labels at k."""
-    outdir = cluster_dir(dataset, side)
-    with open(outdir / "summary.json") as handle:
-        summary = json.load(handle)
-    k = int(k or summary["chosen_k"])
-    table = pd.read_csv(outdir / "neurons.csv")
-    column = f"cluster_k{k}"
-    if column not in table:
-        raise ValueError(f"k={k} was not reached by the consensus; choose from {summary['k_reached']}")
-    index_of = pd.Series(np.arange(len(clouds)), index=clouds.cell_ids)
-    indices = index_of.loc[table["pt_root_id"].to_numpy()].to_numpy()
-    return indices, table[column].to_numpy(dtype=int), k
-
-
-def query_set(dataset, side, query, clouds, reference, min_synapses, min_border_um=0.0):
-    """Clouds and indices of the neurons to assign (never the reference neurons).
-
-    ``query="none"`` assigns nobody: Stage D then only calibrates and validates.
-    The border filter applies to queries too: a truncated cloud would be misassigned.
-    """
-    if query == "none":
-        return clouds, np.array([], dtype=int)
-    if query == "rest":
-        eligible = eligible_neurons(clouds, min_synapses, min_border_um)
-        return clouds, np.setdiff1d(eligible, reference)
-    if side != "dendrite":
-        raise ValueError("--query all is only available for the dendrite side")
-    path = clouds_path(dataset, side, "all")
-    if not path.exists():
-        raise FileNotFoundError(f"{path} is missing; run the extract stage with --all-cells")
-    all_clouds = Clouds(path)
-    eligible = eligible_neurons(all_clouds, min_synapses, min_border_um)
-    known = np.isin(all_clouds.cell_ids[eligible], clouds.cell_ids[reference])
-    return all_clouds, eligible[~known]
-
-
-def assign_neurons(dataset, side, *, query, min_synapses, use_weights, seed, n_neighbours,
-                   template_k_max, template_points, cv_folds, reject_quantile, min_border_um=0.0,
-                   k=None, run_info=None, max_synapses=None):
-    """Stage D: calibrate both assignment methods on the clustered neurons, then assign the queries.
-
-    ``min_border_um`` must match the Stage B/C run being assigned to.
-    """
-    start = time.time()
-    n_jobs = allocated_cpus()
-    clouds = Clouds(clouds_path(dataset, side))
-    reference, labels, k = load_reference(dataset, side, clouds, k)
-    n_clusters = int(labels.max())
-    query_clouds, queries = query_set(dataset, side, query, clouds, reference, min_synapses,
-                                      min_border_um)
-    k_values = list(range(1, template_k_max + 1))
-    templating = dict(k_values=k_values, max_points=template_points, use_weights=use_weights,
-                      n_jobs=n_jobs)
-    print(f"[{side}] {reference.size} reference neurons in {n_clusters} clusters (k={k}, "
-          f"{int(np.sum(labels == 0))} outliers); {queries.size} query neurons ({query}); "
-          f"{n_jobs} CPUs")
-
-    # 1. Cross-validation on the reference set: calibration and held-out metrics.
-    distances = clustering.load_exact(distance_dir(dataset, side), reference)
-    if distances is None:        # e.g. after --method shared: the point-cloud W2 is computed here
-        distances = pairwise(gather(clouds, reference, use_weights, max_synapses, seed), n_jobs)
-    print(f"reference distances ready ({time.time() - start:.0f}s)")
-    cv = assign.cross_validate(clouds, reference, labels, n_clusters, distances, n_folds=cv_folds,
-                               n_neighbours=n_neighbours, seed=seed, **templating)
-    calibration = assign.calibrate_from_cv(cv, labels, n_clusters, reject_quantile)
-    cv_prob, cv_hard = assign.assignments(cv["knn_distance"], cv["knn_label"], cv["score"],
-                                          n_clusters, calibration)
-    cv_metrics = assign.evaluate(cv_prob, cv_hard, labels, n_clusters)
-    print(f"cross-validation done ({time.time() - start:.0f}s)")
-
-    # 2. Final templates from all reference neurons.
-    templates, selection = assign.fit_templates(clouds, reference, labels, n_clusters, seed=seed,
-                                                **templating)
-
-    # 3. Queries.
-    outdir = assign_dir(dataset, side, query)
-    queries_summary = None
-    if queries.size:
-        pool = reference[labels > 0]
-        q_distances = cross(gather(query_clouds, queries, use_weights, max_synapses, seed),
-                            gather(clouds, pool, use_weights, max_synapses, seed), n_jobs)
-        knn_distance, knn_label = assign.nearest_references(q_distances, labels[labels > 0], n_neighbours)
-        score = assign.template_scores(query_clouds, queries, templates, use_weights)
-        q_prob, q_hard = assign.assignments(knn_distance, knn_label, score, n_clusters, calibration)
-        q_table = assign.assignment_table(clustering.neuron_table(query_clouds, queries), q_prob,
-                                          q_hard, knn_distance, score, n_clusters)
-        q_table.to_csv(outdir / "queries.csv", index=False)
-        queries_summary = assign.query_summary(q_prob, q_hard, q_table)
-        plotting.plot_queries(q_prob, q_hard, outdir / "queries.png")
-        print(f"queries done ({time.time() - start:.0f}s)")
-
-    # 4. Reference table, templates, summary and figures.
-    base = clustering.neuron_table(clouds, reference)
-    base.insert(1, "consensus", labels)
-    base.insert(2, "fold", cv["fold"])
-    assign.assignment_table(base, cv_prob, cv_hard, cv["knn_distance"], cv["score"],
-                            n_clusters).to_csv(outdir / "reference_cv.csv", index=False)
-    with open(outdir / "templates.json", "w") as handle:
-        json.dump(assign.serialise_templates(templates, selection, labels), handle, indent=2)
-    summary = {
-        "run": {"dataset": dataset, "side": side, "query": query,
-                "min_border_um": min_border_um,
-                "max_synapses": max_synapses, "n_neighbours": n_neighbours,
-                "template_k_max": template_k_max, "template_points": template_points,
-                "cv_folds": cv_folds, **(run_info or {})},
-        "k": k,
-        "n_clusters": n_clusters,
-        "n_reference": int(reference.size),
-        "n_reference_outliers": int(np.sum(labels == 0)),
-        "n_queries": int(queries.size),
-        "calibration": calibration,
-        "cross_validation": cv_metrics,
-        "templates": {str(c): {"n_components": templates[c].n_components, "bic_per_k": selection[c]}
-                      for c in sorted(templates)},
-        "queries": queries_summary,
-    }
-    with open(outdir / "summary.json", "w") as handle:
-        json.dump(summary, handle, indent=2)
-    plotting.plot_assign_cv(cv_metrics, cv_prob, labels, outdir / "cv_confusion.png",
-                            outdir / "cv_reliability.png")
-    plotting.plot_templates(templates, clouds, reference, labels, outdir / "templates.png")
-
-    brief = {method: {key: cv_metrics[method][key] for key in
-                      ("accuracy", "nll", "ece", "rejected_fraction", "outliers_rejected_fraction")}
-             for method in assign.METHODS}
-    print(json.dumps({"calibration": {key: calibration[key] for key in
-                                      ("tau_um2", "temperature", "reject_distance_um", "reject_score")},
-                      "cross_validation": brief, "agreement": cv_metrics["agreement"],
-                      "queries": queries_summary}, indent=2))
-    print(f"Outputs in {outdir} ({time.time() - start:.0f}s)")

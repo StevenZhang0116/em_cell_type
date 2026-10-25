@@ -3,10 +3,8 @@ Run the Whole Pipeline
 ======================
 Stage A (extract clouds), then for every side: Stage B (exact distances between
 the complete clouds, plus bootstrap replicates) and Stage C (clustering and
-checks). Stage D (assigning the neurons that were not clustered) is optional and
-only runs when "assign" is listed in --stages. An optional "validate" stage runs
-the disjoint split-half consensus validation before Stage B; see
-docs/split_cluster.md.
+checks). An optional "validate" stage runs the disjoint split-half consensus
+validation before Stage B; see docs/split_cluster.md.
 
 Everything except the clouds is written to output/<dataset>/trials/, one set
 of outputs per dataset; its config.json records the Stage B and C parameters
@@ -21,7 +19,6 @@ Example::
     python -u scripts/run_pipeline.py --sides axon
     python -u scripts/run_pipeline.py --n-neurons 50 --n-reps 2   # quick test
     python -u scripts/run_pipeline.py --n-neurons 1000 --max-synapses 3000   # cap the largest clouds
-    python -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --stages assign --query rest
     python -u scripts/run_pipeline.py --n-neurons 1000 --method shared --stages distances cluster
     python -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --min-border-distance 50
     python -u scripts/run_pipeline.py --sides dendrite --stages validate --min-synapses 400 --n-neurons 100 --validation-points-per-half 200 --validation-reps 10 --n-reps 5
@@ -38,11 +35,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from celltype import pipeline
 from celltype.clouds import Clouds
-from celltype.config import DATASETS, SIDES, assign_dir, cluster_dir, clouds_path, distance_dir
+from celltype.config import DATASETS, SIDES, cluster_dir, clouds_path, distance_dir
 
 
-STAGES = ("extract", "validate", "distances", "cluster", "assign")
-DEFAULT_STAGES = ("extract", "distances", "cluster")   # validation and Stage D only on request
+STAGES = ("extract", "validate", "distances", "cluster")
+DEFAULT_STAGES = ("extract", "distances", "cluster")   # validation only on request
 
 
 def main(argv=None):
@@ -50,8 +47,8 @@ def main(argv=None):
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", choices=sorted(DATASETS), default="microns")
     parser.add_argument("--stages", nargs="+", choices=STAGES, default=list(DEFAULT_STAGES),
-                        help="stages to run (default: extract distances cluster); validate and assign "
-                             "run only when explicitly listed; execution follows the stage order")
+                        help="stages to run (default: extract distances cluster); validate runs only "
+                             "when explicitly listed; execution follows the stage order")
     parser.add_argument("--sides", nargs="+", choices=SIDES, default=list(SIDES))
     parser.add_argument("--overwrite", action="store_true",
                         help="recompute outputs that already exist (implied when the Stage B/C "
@@ -59,9 +56,6 @@ def main(argv=None):
     # Stage A
     parser.add_argument("--lateral-cutoff", type=float, default=250.0,
                         help="max lateral synapse-to-soma distance in um")
-    parser.add_argument("--all-cells", action="store_true",
-                        help="also extract the dendrite clouds of every cell in the table "
-                             "(clouds_dendrite_all.npz), needed for --query all")
     # Stage B
     parser.add_argument("--method", choices=("points", "shared"), default="points",
                         help="points: exact W2 between the complete synapse clouds; shared: MW2 "
@@ -87,8 +81,7 @@ def main(argv=None):
                         help="exclude neurons whose soma is closer than this (um) to the volume "
                              "border, whose arbors are truncated (default 0: keep all)")
     parser.add_argument("--n-neurons", type=int, default=None,
-                        help="cluster only this many randomly chosen neurons per side "
-                             "(default: all); the rest can be assigned in Stage D")
+                        help="cluster only this many randomly chosen neurons per side (default: all)")
     parser.add_argument("--no-weights", action="store_true",
                         help="ignore border-compensation weights")
     parser.add_argument("--seed", type=int, default=20261019)
@@ -105,23 +98,8 @@ def main(argv=None):
                         help="clusters smaller than this are labelled outliers (cluster 0) "
                              "and do not count towards k")
     parser.add_argument("--k", type=int, default=None,
-                        help="fixed consensus k for validation, Stage C and Stage D "
+                        help="fixed consensus k for validation and Stage C "
                              "(default: most stable k >= 3, falling back to reachable k)")
-    # Stage D
-    parser.add_argument("--query", choices=("rest", "all", "none"), default="rest",
-                        help="neurons to assign: the proofread neurons not clustered (rest), "
-                             "every cell's dendrite (all; dendrite side only, needs --all-cells) "
-                             "or nobody (none: only cross-validate and fit the templates)")
-    parser.add_argument("--knn", type=int, default=10, help="nearest references that vote")
-    parser.add_argument("--template-k-max", type=int, default=8,
-                        help="largest number of GMM components tried per cluster template")
-    parser.add_argument("--template-points", type=int, default=100_000,
-                        help="synapses per cluster used to fit its template")
-    parser.add_argument("--cv-folds", type=int, default=5,
-                        help="folds of the reference set for calibration and validation")
-    parser.add_argument("--reject-quantile", type=float, default=0.95,
-                        help="queries beyond this quantile of held-out reference distances "
-                             "(or below 1 - it in template score) get label 0")
     args = parser.parse_args(argv)
     if args.n_reps < 1 or args.k_min < 2 or args.k_max < args.k_min or args.min_cluster_size < 1:
         parser.error("need --n-reps >= 1, 2 <= --k-min <= --k-max and --min-cluster-size >= 1")
@@ -146,12 +124,6 @@ def main(argv=None):
         else:
             print("== Stage A: extracting clouds")
             pipeline.extract_clouds(args.dataset, args.lateral_cutoff)
-        if args.all_cells:
-            if not args.overwrite and clouds_path(args.dataset, "dendrite", "all").exists():
-                print("== Stage A: reusing existing all-cell dendrite clouds")
-            else:
-                print("== Stage A: extracting the dendrite clouds of every cell")
-                pipeline.extract_all_dendrites(args.dataset, args.lateral_cutoff)
 
     params = {"method": args.method, "n_neurons": args.n_neurons, "n_reps": args.n_reps,
               "max_synapses": args.max_synapses, "shared_k": args.shared_k,
@@ -201,7 +173,6 @@ def main(argv=None):
                                            **selection)
                 fresh = True
 
-        reclustered = False   # Stage C recomputed in this run
         if "cluster" in args.stages:
             summary = cluster_dir(args.dataset, side) / "summary.json"
             if summary.exists() and not (fresh or args.overwrite):
@@ -212,25 +183,9 @@ def main(argv=None):
                     args.dataset, side, linkage=args.linkage,
                     k_values=list(range(args.k_min, args.k_max + 1)),
                     min_cluster_size=args.min_cluster_size, k=args.k, run_info=params)
-                reclustered = True
 
         if validation is not None:
             pipeline.compare_validation_to_full(validation, args.dataset, side)
-
-        if "assign" in args.stages:
-            tag = f"{side} | query {args.query}"
-            summary = assign_dir(args.dataset, side, args.query) / "summary.json"
-            if summary.exists() and not (fresh or reclustered or args.overwrite):
-                print(f"== Stage D: {tag} already assigned")
-            else:
-                print(f"== Stage D: {tag}")
-                pipeline.assign_neurons(
-                    args.dataset, side, query=args.query, min_synapses=args.min_synapses,
-                    use_weights=not args.no_weights, seed=args.seed, max_synapses=args.max_synapses,
-                    n_neighbours=args.knn, template_k_max=args.template_k_max,
-                    template_points=args.template_points, cv_folds=args.cv_folds,
-                    reject_quantile=args.reject_quantile,
-                    min_border_um=args.min_border_distance, k=args.k, run_info=params)
         print(f"   elapsed {(time.time() - start) / 3600:.2f} h")
 
     print(f"All done in {(time.time() - start) / 3600:.2f} h")

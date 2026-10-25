@@ -12,11 +12,10 @@ afterwards.
 
 | Stage | Function (`celltype/pipeline.py`) | What it does | Output (`output/<dataset>/`) |
 |---|---|---|---|
-| A | `extract_clouds` | All synapses of each proofread neuron, regardless of partner type, as soma-centred offsets `(dx, dy, dz)` in um with border-compensation weights; lateral cutoff 250 um. `--all-cells` also extracts the dendrite clouds of every cell in the table | `clouds_{axon,dendrite}.npz`, `clouds_dendrite_all.npz` |
+| A | `extract_clouds` | All synapses of each proofread neuron, regardless of partner type, as soma-centred offsets `(dx, dy, dz)` in um with border-compensation weights; lateral cutoff 250 um | `clouds_{axon,dendrite}.npz` |
 | validate (optional) | `validate_neurons` | Disjoint synapse halves of the same neuron cohort. A selects k using its internal bootstrap consensus; B independently refits consensus at A's k. Reports ARI with coverage, per-cluster overlap, and B distances grouped by A labels only. Points method only; see [split_cluster.md](split_cluster.md) | `trials/validate_<side>/` |
 | B | `compute_exact_distances`, `compute_distances` | `--method points`: the exact 2-Wasserstein distance between the complete soma-relative synapse clouds of two neurons, every synapse with its border-compensation weight as mass, solved as an optimal transport problem (so the in-plane direction of an arbor counts); written once as `exact.npz`. Then each bootstrap replicate: the same clouds with bootstrap multiplicities (n draws with replacement from a neuron's n synapses), giving a distance matrix plus each neuron's self-distance between two independent draws (noise floor). `--method shared`: MW2 between mixing weights over one shared Gaussian mixture per side (`fit_shared_model`), see below | `trials/dist_<side>/exact.npz`, `rep<b>.npz`; `trials/shared_<side>.npz` |
 | C | `cluster_neurons` | Each replicate is clustered (average linkage) into k major clusters of at least `--min-cluster-size` neurons, smaller clusters becoming outliers (cluster 0); the consensus labels come from clustering the co-clustering matrix. Reports per-replicate ARI against the consensus, PAC (ambiguity), AMI/ARI with dataset labels, confound checks (soma depth, synapse count, border weight, distance to border) | `trials/cluster_<side>/` |
-| D (optional) | `assign_neurons` | Only with `--stages ... assign`: turns the consensus clusters into a classifier for neurons that were not clustered, see [assignment.md](assignment.md) | `trials/assign_<side>_<query>/` |
 
 ## Outputs and options
 
@@ -31,12 +30,11 @@ skipped unless `--overwrite`.
   subsample without replacement, the masses staying the weights. Every synapse is used by
   default; the cap exists because a pair of clouds of n synapses costs about n^2 memory and
   a little more than n^2 time, see "Cost" below.
-- `--n-neurons K` clusters only K randomly chosen neurons per side (same K neurons in every
-  replicate); the remaining proofread neurons can be assigned in Stage D (`--query rest`).
+- `--n-neurons K` clusters only K randomly chosen neurons per side (the same K neurons in
+  every replicate).
 - `--min-border-distance` (um, default 0) excludes neurons whose soma is closer than this to
   the volume border; their arbors are truncated and form spurious clusters. Median soma
-  distance to the border is about 170 to 200 um, so useful values are 50 to 100 um. The filter
-  applies to Stage D queries as well.
+  distance to the border is about 170 to 200 um, so useful values are 50 to 100 um.
 - `--min-cluster-size` (default 5): clusters with fewer neurons are reported as outliers
   (cluster 0, "out" in figures) and do not count towards k.
 - The reported k (when `--k` is not given) is the largest k whose median per-replicate ARI is
@@ -46,10 +44,10 @@ skipped unless `--overwrite`.
   The rule and its candidates are recorded under `k_selection` in `summary.json`.
   Full-cloud and split-half fits share `clustering.fit_consensus`. An unreachable fixed
   `--k` raises an error in Stage C and is recorded as a failure in validation.
-- `--stages` selects stages from `extract validate distances cluster assign`; execution
-  follows that order regardless of argument order. The default remains `extract distances
-  cluster`. Validation and assignment run only when explicitly listed. Finished outputs
-  are skipped unless `--overwrite`; validation resumes individual completed outer splits.
+- `--stages` selects stages from `extract validate distances cluster`; execution follows
+  that order regardless of argument order. The default is `extract distances cluster`;
+  validation runs only when explicitly listed. Finished outputs are skipped unless
+  `--overwrite`; validation resumes after its last completed outer split.
 - New distance files carry the Stage-A file's SHA-256. Stage C rejects known stale
   distance inputs and records provenance in its summary. Legacy caches still load, but
   their full fit cannot be linked to validation as verified: rerun `distances cluster`
@@ -81,7 +79,7 @@ skipped unless `--overwrite`.
 Both methods write the same replicate files. For the points method Stage C takes the exact
 matrix as the distance (tree, noise floor, `distance.npy`) and the replicates for the
 consensus and its stability; for the shared method the replicate mean stands in
-(`distance_matrix` in `summary.json`). Stage D's kNN always uses the point-cloud W2.
+(`distance_matrix` in `summary.json`).
 
 ## Cost
 
@@ -99,9 +97,8 @@ costs about a third of the exact matrix per pair. The median proofread axon has 
 Rough totals on 10 CPUs for the exact matrix plus 10 replicates: 1000 axons about 10 h, all
 1.7k axons about 30 h; 1000 dendrites about 140 h, or about 35 h with `--max-synapses 2000
 --n-reps 5`, and 500 dendrites with that cap about 9 h. So cluster the dendrite side on a
-few hundred neurons or with the cap and assign the rest in Stage D. The Stage D distances (one
-pair per query and reference) cost the same per pair. Stage A needs about 96 GB of memory,
-Stages B to D a few GB plus the cost matrices of the pairs in flight.
+few hundred neurons or with the cap. Stage A needs about 96 GB of memory, Stages B and C a
+few GB plus the cost matrices of the pairs in flight.
 
 ## Stage C outputs (`trials/cluster_<side>/`)
 
@@ -118,5 +115,5 @@ Stages B to D a few GB plus the cost matrices of the pairs in flight.
 ## Caveat
 
 Features use every synapse of a neuron. That is fine for exploration, but when the new
-labels are later used to predict held-out connections, the clouds and the templates must be
-rebuilt inside each cross-validation fold from training-side synapses only.
+labels are later used to predict held-out connections, the clouds must be rebuilt inside
+each cross-validation fold from training-side synapses only.
