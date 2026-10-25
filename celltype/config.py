@@ -9,7 +9,8 @@ Input tables are the ones used by the Stage-1 GMM fit in
   clouds_dendrite_all.npz                        (Stage A with --all-cells)
   trials/<trial>/config.json                     (run parameters)
   trials/<trial>/shared_<side>.npz               (Stage B, --method shared only)
-  trials/<trial>/dist_<side>/rep<b>.npz          (Stage B)
+  trials/<trial>/dist_<side>/exact.npz           (Stage B, --method points: complete clouds)
+  trials/<trial>/dist_<side>/rep<b>.npz          (Stage B, bootstrap replicates)
   trials/<trial>/cluster_<side>/...              (Stage C)
   trials/<trial>/assign_<side>_<query>/          (Stage D, optional)
 
@@ -60,41 +61,28 @@ def allocated_cpus():
     return int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))
 
 
-# Synapses resampled per neuron per replicate by ``--method points``, per side.
-# This is the main cost knob: the exact W2 between two clouds of n points is an
-# n x n assignment problem whose time grows roughly with n^3 (about 4 ms per pair
-# per CPU at 200 points, see docs/pipeline.md). Dendrites have a median of 2400 synapses, axons 380.
-DEFAULT_N_POINTS = {"axon": 200, "dendrite": 2000}
+# ``--method points`` compares the complete synapse clouds; the exact W2 between
+# clouds of n and m points costs about n * m memory and a little more than n^2 time (see
+# docs/pipeline.md). Dendrites have a median of 2400 synapses (max 25k), axons 400
+# (max 12k); ``max_synapses`` caps only the largest clouds.
 
 
-def points_per_side(n_points=None):
-    """``{side: n}`` from an int (every side), a per-side mapping, or None (``DEFAULT_N_POINTS``)."""
-    if n_points is None:
-        return dict(DEFAULT_N_POINTS)
-    if isinstance(n_points, dict):
-        return {side: int(n_points[side]) for side in SIDES}
-    return {side: int(n_points) for side in SIDES}
-
-
-def points_token(n_points=None):
-    """``pt200`` when every side resamples the same count, else ``pt<axon>-<dendrite>``."""
-    values = [points_per_side(n_points)[side] for side in SIDES]
-    return "pt" + (str(values[0]) if len(set(values)) == 1 else "-".join(map(str, values)))
-
-
-def trial_name(*, n_neurons, n_reps, n_points, min_synapses, use_weights, seed,
-               linkage, k_min, k_max, min_cluster_size, k=None,
+def trial_name(*, n_neurons, n_reps, min_synapses, use_weights, seed,
+               linkage, k_min, k_max, min_cluster_size, k=None, max_synapses=None,
                method="points", shared_k=30, shared_alpha=10.0, align=False, min_border=0.0):
     """Readable folder name that encodes every Stage B and C parameter.
 
-    The third token says how neurons are compared: ``pt<n>`` for the point-cloud
-    W2 on ``n`` resampled synapses (``pt<axon>-<dendrite>`` when the sides
-    differ, ``points_token``), ``shared<K>_a<alpha>`` for MW2 between mixing
+    The third token says how neurons are compared: ``full`` for the exact W2
+    between the complete synapse clouds (``max<n>`` when clouds above n
+    synapses are capped), ``shared<K>_a<alpha>`` for MW2 between mixing
     weights over K shared components with Dirichlet strength alpha. ``aligned``
     marks canonically rotated clouds, ``border<um>`` a minimum soma distance
     from the volume border.
     """
-    sampling = points_token(n_points) if method == "points" else f"shared{shared_k}_a{shared_alpha:g}"
+    if method == "points":
+        sampling = f"max{max_synapses}" if max_synapses else "full"
+    else:
+        sampling = f"shared{shared_k}_a{shared_alpha:g}"
     parts = [f"n{n_neurons or 'all'}", f"rep{n_reps}", sampling]
     if align:
         parts.append("aligned")

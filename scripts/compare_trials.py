@@ -4,8 +4,8 @@ Compare Two Clusterings
 Side by side comparison of two Stage C runs on the same neurons: two trials
 with different Stage B settings (typically ``--method points`` vs ``--method
 shared``, or with and without ``--align``; same ``--n-neurons`` and ``--seed``
-give the same neurons). Prints, per side: correlation of the two mean distance
-matrices, self/nearest-neighbour ratio, chosen k with its stability and PAC,
+give the same neurons). Prints, per side: correlation of the two distance
+matrices (`distance.npy`), self/nearest-neighbour ratio, chosen k with its stability and PAC,
 AMI with cell_type, and the ARI between the two consensus labelings. Saves a
 scatter of the two distance matrices. Outputs are labelled by the trial-name
 tokens in which the two trials differ.
@@ -13,7 +13,7 @@ tokens in which the two trials differ.
 Example::
 
     python scripts/compare_trials.py --sides axon \\
-        --trial-a n1000_rep10_pt200_min100_weighted_seed20261019_average_k2-20_mcs5 \\
+        --trial-a n1000_rep10_full_min100_weighted_seed20261019_average_k2-20_mcs5 \\
         --trial-b n1000_rep10_shared30_a10_min100_weighted_seed20261019_average_k2-20_mcs5
 """
 
@@ -42,7 +42,10 @@ def load_clustering(dataset, trial, side):
     with open(outdir / "summary.json") as handle:
         summary = json.load(handle)
     table = pd.read_csv(outdir / "neurons.csv")
-    return summary, table, np.load(outdir / "mean_distance.npy")
+    matrix = outdir / "distance.npy"
+    if not matrix.exists():          # trials from before the exact matrix
+        matrix = outdir / "mean_distance.npy"
+    return summary, table, np.load(matrix)
 
 
 def describe(summary):

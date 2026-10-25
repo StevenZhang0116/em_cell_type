@@ -53,7 +53,7 @@ def _save(fig, path):
     plt.close(fig)
 
 
-def plot_tree_heatmap(tree, mean_distance, table, labels, k, path, title):
+def plot_tree_heatmap(tree, distance, table, labels, k, path, title):
     fig = plt.figure(figsize=(11, 12))
     ax_tree = fig.add_axes([0.14, 0.80, 0.74, 0.15])
     leaves = dendrogram(tree, ax=ax_tree, no_labels=True, color_threshold=None,
@@ -77,7 +77,7 @@ def plot_tree_heatmap(tree, mean_distance, table, labels, k, path, title):
                        fontsize=7, title="cell_type", frameon=False)
 
     ax_heat = fig.add_axes([0.14, 0.05, 0.74, 0.69])
-    image = ax_heat.imshow(mean_distance[np.ix_(leaves, leaves)], cmap="viridis",
+    image = ax_heat.imshow(distance[np.ix_(leaves, leaves)], cmap="viridis",
                            interpolation="nearest", aspect="auto")
     ax_heat.set_xticks([])
     ax_heat.set_yticks([])
@@ -145,7 +145,7 @@ def plot_noise(nearest, self_mean, path):
     limit = max(nearest.max(), self_mean.max())
     ax.plot([0, limit], [0, limit], color="0.5", ls="--", lw=1)
     ax.set_xlabel("distance to nearest other neuron (um)")
-    ax.set_ylabel("resampling self-distance (um)")
+    ax.set_ylabel("bootstrap self-distance (um)")
     ax.set_title("Noise floor (below the diagonal = resolvable)")
     fig.tight_layout()
     _save(fig, path)

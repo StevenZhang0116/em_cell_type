@@ -14,7 +14,7 @@ copied.
 | Stage | What | Output |
 |---|---|---|
 | A | the synapse cloud of every proofread neuron: soma-centred offsets with border-compensation weights | `output/<dataset>/clouds_<side>.npz` |
-| B | bootstrap replicates of neuron-to-neuron distances: exact W2 between resampled point clouds, or MW2 over one shared Gaussian mixture | `trials/<trial>/dist_<side>/` |
+| B | neuron-to-neuron distances: the exact W2 between the complete synapse clouds, plus bootstrap replicates for the noise; or MW2 over one shared Gaussian mixture | `trials/<trial>/dist_<side>/` |
 | C | consensus clustering of the replicates, choice of k, checks against the dataset labels and confounds | `trials/<trial>/cluster_<side>/` |
 | D (optional) | assign unclustered neurons to the clusters (kNN on W2 and cluster templates), calibrated by cross-validation | `trials/<trial>/assign_<side>_<query>/` |
 
@@ -43,8 +43,8 @@ sbatch jobs/unit_tests.slurm                                       # pytest unit
 source jobs/env.sh                                                 # on the allocated node
 $PYTHON -u scripts/run_pipeline.py --stages extract                # Stage A, once (96 GB)
 $PYTHON -u scripts/run_pipeline.py --sides axon                    # all proofread axons: Stages B and C
-$PYTHON -u scripts/run_pipeline.py --n-neurons 1000 --n-points 200 --stages distances cluster   # 1000 neurons per side
-$PYTHON -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --n-points 200 500 --stages assign --query rest   # Stage D
+$PYTHON -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --stages distances cluster   # 1000 axons, about 10 h
+$PYTHON -u scripts/run_pipeline.py --sides dendrite --n-neurons 500 --max-synapses 2000 --n-reps 5 --stages distances cluster assign --query rest   # dendrites, then Stage D
 $PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --starts 3           # per-neuron GMMs
 ```
 

@@ -1,16 +1,16 @@
 """
 Run the Whole Pipeline
 ======================
-Stage A (extract clouds), then for every side: Stage B (bootstrap distance
-replicates) and Stage C (clustering and checks). Stage D (assigning the
+Stage A (extract clouds), then for every side: Stage B (exact distances between
+the complete clouds, plus bootstrap replicates) and Stage C (clustering and checks). Stage D (assigning the
 neurons that were not clustered) is optional and only runs when "assign" is
 listed in --stages. See celltype/pipeline.py for the stages.
 
 Everything except the clouds is written to output/<dataset>/trials/<trial>/,
 where <trial> encodes the Stage B and C parameters (e.g.
-n10_rep2_pt200-2000_min100_weighted_seed20261019_average_k2-3_mcs5: 200
-resampled synapses per axon, 2000 per dendrite), so different parameter
-settings never overwrite each other. Within a trial, finished outputs are
+n10_rep2_full_min100_weighted_seed20261019_average_k2-3_mcs5: 10 neurons,
+2 bootstrap replicates, complete clouds), so different parameter settings
+never overwrite each other. Within a trial, finished outputs are
 skipped, so a job that hits its time limit can simply be resubmitted; pass
 --overwrite to recompute everything.
 
@@ -18,8 +18,8 @@ Example::
 
     python -u scripts/run_pipeline.py --dataset microns
     python -u scripts/run_pipeline.py --sides axon
-    python -u scripts/run_pipeline.py --n-neurons 50 --n-reps 2 --n-points 50   # quick test
-    python -u scripts/run_pipeline.py --n-neurons 1000 --n-points 200 500   # axon 200, dendrite 500
+    python -u scripts/run_pipeline.py --n-neurons 50 --n-reps 2   # quick test
+    python -u scripts/run_pipeline.py --n-neurons 1000 --max-synapses 3000   # cap the largest clouds
     python -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --stages assign --query rest
     python -u scripts/run_pipeline.py --n-neurons 1000 --method shared --stages distances cluster
     python -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --align --min-border-distance 50
@@ -37,8 +37,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from celltype import pipeline
 from celltype.clouds import Clouds
-from celltype.config import (DATASETS, DEFAULT_N_POINTS, SIDES, assign_dir, cluster_dir, clouds_path,
-                             distance_dir, points_per_side, trial_dir, trial_name)
+from celltype.config import (DATASETS, SIDES, assign_dir, cluster_dir, clouds_path, distance_dir,
+                             trial_dir, trial_name)
 
 
 STAGES = ("extract", "distances", "cluster", "assign")
@@ -63,14 +63,16 @@ def main():
                              "(clouds_dendrite_all.npz), needed for --query all")
     # Stage B
     parser.add_argument("--method", choices=("points", "shared"), default="points",
-                        help="points: W2 between resampled synapse clouds; shared: MW2 between "
-                             "mixing weights over one shared Gaussian mixture per side")
-    parser.add_argument("--n-reps", type=int, default=10, help="bootstrap replicates")
-    parser.add_argument("--n-points", nargs="+", type=int, default=None,
-                        help="[points] synapses resampled per neuron per replicate: one value for "
-                             "every side, or one per side in the order axon, dendrite (default: "
-                             + ", ".join(f"{s} {n}" for s, n in DEFAULT_N_POINTS.items())
-                             + "; the exact W2 per pair costs about n^3, see docs/pipeline.md)")
+                        help="points: exact W2 between the complete synapse clouds; shared: MW2 "
+                             "between mixing weights over one shared Gaussian mixture per side")
+    parser.add_argument("--n-reps", type=int, default=10,
+                        help="bootstrap replicates (the exact matrix of --method points is computed "
+                             "once in addition)")
+    parser.add_argument("--max-synapses", type=int, default=None,
+                        help="[points] cap clouds above this many synapses by a uniform subsample "
+                             "(default: none, every synapse is used; a pair of clouds of n synapses "
+                             "costs about n^2 memory and a little more than n^2 time, see "
+                             "docs/pipeline.md)")
     parser.add_argument("--shared-k", type=int, default=30,
                         help="[shared] components of the shared mixture")
     parser.add_argument("--shared-alpha", type=float, default=10.0,
@@ -107,8 +109,6 @@ def main():
                         help="neurons to assign: the proofread neurons not clustered (rest), "
                              "every cell's dendrite (all; dendrite side only, needs --all-cells) "
                              "or nobody (none: only cross-validate and fit the templates)")
-    parser.add_argument("--assign-reps", type=int, default=3,
-                        help="resamples averaged for each query-to-reference distance")
     parser.add_argument("--knn", type=int, default=10, help="nearest references that vote")
     parser.add_argument("--template-k-max", type=int, default=8,
                         help="largest number of GMM components tried per cluster template")
@@ -120,12 +120,6 @@ def main():
                         help="queries beyond this quantile of held-out reference distances "
                              "(or below 1 - it in template score) get label 0")
     args = parser.parse_args()
-    if args.n_points is None or len(args.n_points) == 1:
-        n_points = points_per_side(None if args.n_points is None else args.n_points[0])
-    elif len(args.n_points) == len(SIDES):
-        n_points = dict(zip(SIDES, args.n_points))
-    else:
-        parser.error(f"--n-points takes one value or one per side ({', '.join(SIDES)})")
     start = time.time()
 
     if "extract" in args.stages:
@@ -142,7 +136,8 @@ def main():
                 pipeline.extract_all_dendrites(args.dataset, args.lateral_cutoff)
 
     params = {"method": args.method, "n_neurons": args.n_neurons, "n_reps": args.n_reps,
-              "n_points": n_points, "shared_k": args.shared_k, "shared_alpha": args.shared_alpha,
+              "max_synapses": args.max_synapses, "shared_k": args.shared_k,
+              "shared_alpha": args.shared_alpha,
               "align": args.align, "min_synapses": args.min_synapses,
               "min_border": args.min_border_distance, "use_weights": not args.no_weights,
               "seed": args.seed, "linkage": args.linkage, "k_min": args.k_min,
@@ -164,17 +159,22 @@ def main():
                     n_neurons=args.n_neurons, seed=args.seed, use_weights=not args.no_weights,
                     n_components=args.shared_k, fit_points=args.shared_fit_points,
                     min_border_um=args.min_border_distance)
+            selection = dict(min_synapses=args.min_synapses, use_weights=not args.no_weights,
+                             seed=args.seed, n_neurons=args.n_neurons,
+                             min_border_um=args.min_border_distance, max_synapses=args.max_synapses)
+            exact = distance_dir(args.dataset, trial, side) / "exact.npz"
+            if args.method == "points" and (args.overwrite or not exact.exists()):
+                print(f"== Stage B: {side} | exact distances of the complete clouds")
+                pipeline.compute_exact_distances(clouds, args.dataset, trial, side, **selection)
+                fresh = True
             for rep in range(args.n_reps):
                 path = distance_dir(args.dataset, trial, side) / f"rep{rep:03d}.npz"
                 if path.exists() and not args.overwrite:
                     continue
-                print(f"== Stage B: {side} | replicate {rep}")
-                pipeline.compute_distances(
-                    clouds, args.dataset, trial, side, rep,
-                    n_points=n_points[side], min_synapses=args.min_synapses,
-                    use_weights=not args.no_weights, seed=args.seed,
-                    n_neurons=args.n_neurons, min_border_um=args.min_border_distance,
-                    method=args.method, shared_model=shared_model, shared_alpha=args.shared_alpha)
+                print(f"== Stage B: {side} | bootstrap replicate {rep}")
+                pipeline.compute_distances(clouds, args.dataset, trial, side, rep, method=args.method,
+                                           shared_model=shared_model, shared_alpha=args.shared_alpha,
+                                           **selection)
                 fresh = True
 
         reclustered = False   # Stage C recomputed in this run
@@ -198,9 +198,8 @@ def main():
             else:
                 print(f"== Stage D: {tag}")
                 pipeline.assign_neurons(
-                    args.dataset, trial, side, query=args.query,
-                    n_points=n_points[side], min_synapses=args.min_synapses,
-                    use_weights=not args.no_weights, seed=args.seed, n_reps=args.assign_reps,
+                    args.dataset, trial, side, query=args.query, min_synapses=args.min_synapses,
+                    use_weights=not args.no_weights, seed=args.seed, max_synapses=args.max_synapses,
                     n_neighbours=args.knn, template_k_max=args.template_k_max,
                     template_points=args.template_points, cv_folds=args.cv_folds,
                     reject_quantile=args.reject_quantile,

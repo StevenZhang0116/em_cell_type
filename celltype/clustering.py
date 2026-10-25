@@ -3,7 +3,7 @@ Hierarchical Clustering, Stability and Post-Hoc Checks
 ======================================================
 Works on the bootstrap replicates of one side:
 
-1. Noise floor -- each neuron's resampling self-distance vs its distance to
+1. Noise floor -- each neuron's bootstrap self-distance vs its distance to
    the nearest other neuron. Self/nearest near 1 only says the nearest
    neighbour is indistinguishable from the neuron itself (expected inside a
    homogeneous type); compare self-distance with between-cluster distances.
@@ -61,6 +61,17 @@ def load_replicates(directory):
     return np.stack(matrices), np.stack(self_distances), eligible
 
 
+def load_exact(directory, eligible):
+    """The exact distance matrix of the complete clouds (``exact.npz`` of ``--method points``), or None."""
+    path = directory / "exact.npz"
+    if not path.exists():
+        return None
+    with np.load(path) as data:
+        if not np.array_equal(data["eligible"], eligible):
+            raise ValueError(f"{path} holds a different neuron set; rerun Stage B")
+        return data["distance"].astype(float)
+
+
 def neuron_table(clouds, eligible):
     """Per-neuron covariates and dataset labels for the clustered neurons."""
     meta = clouds.meta
@@ -85,16 +96,16 @@ def present_covariates(table):
 # Analyses
 # ---------------------------------------------------------------------------
 
-def noise_summary(mean_distance, self_distances):
+def noise_summary(distance, self_distances):
     """Per-neuron nearest-neighbour and self distances plus summary numbers."""
-    off_diagonal = mean_distance + np.diag(np.full(mean_distance.shape[0], np.inf))
+    off_diagonal = distance + np.diag(np.full(distance.shape[0], np.inf))
     nearest = off_diagonal.min(axis=1)
     self_mean = self_distances.mean(axis=0)
     ratio = self_mean / nearest
     return nearest, self_mean, {
         "median_self_distance_um": float(np.median(self_mean)),
         "median_nearest_neighbour_um": float(np.median(nearest)),
-        "median_pairwise_um": float(np.median(squareform(mean_distance, checks=False))),
+        "median_pairwise_um": float(np.median(squareform(distance, checks=False))),
         "median_self_over_nearest": float(np.median(ratio)),
         "fraction_self_over_nearest_gt_1": float(np.mean(ratio > 1)),
     }
@@ -265,10 +276,10 @@ def label_agreement(table, consensus_labels, k_values):
     return result
 
 
-def covariate_distance_correlation(mean_distance, table):
+def covariate_distance_correlation(distance, table):
     """Spearman rho between pairwise distance and |covariate difference|."""
-    upper = np.triu_indices(mean_distance.shape[0], 1)
-    distances = mean_distance[upper]
+    upper = np.triu_indices(distance.shape[0], 1)
+    distances = distance[upper]
     result = {}
     for column in present_covariates(table):
         values = table[column].to_numpy(dtype=float)

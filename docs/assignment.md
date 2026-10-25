@@ -10,9 +10,10 @@ clustered), `--query all` (the dendrite of every cell in the table, from
 fit the templates). Two methods give a posterior over the k major clusters plus a "none"
 label 0:
 
-- **knn**: the query is resampled like a Stage-B replicate, its W2 distance to every
-  clustered non-outlier neuron is averaged over `--assign-reps` resamples, and the
-  `--knn` nearest references vote with weight `exp(-d^2 / tau)`.
+- **knn**: the exact W2 between the query's complete synapse cloud and that of every
+  clustered non-outlier neuron, as in Stage B (the reference-to-reference matrix is Stage
+  B's `exact.npz`, recomputed for a `--method shared` trial; `--max-synapses` applies to
+  the queries too), and the `--knn` nearest references vote with weight `exp(-d^2 / tau)`.
 - **template**: each cluster's synapses are pooled (soma-centred) and fitted with the
   cylindrically constrained weighted GMM of `../mixture` (`celltype/templates.py`: diagonal
   covariances, one shared lateral centre, isotropic lateral variance, K by weighted BIC up
@@ -40,7 +41,9 @@ confusion matrices, and the agreement between the methods.
 
 Axon and dendrite clusters are separate taxonomies, so a neuron gets one label per side
 and the two must not be multiplied; a dendrite-only neuron has no axon label. Non-proofread
-dendrites (`--query all`) may be truncated or merged.
+dendrites (`--query all`) may be truncated or merged. The kNN distances cost one exact W2
+per query-reference pair (cost table in [pipeline.md](pipeline.md)), so assigning the 12k
+remaining dendrites to 3k references is out of reach without `--max-synapses`.
 
 ## Outputs (`trials/<trial>/assign_<side>_<query>/`)
 

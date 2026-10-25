@@ -9,10 +9,11 @@ table (query ``all``, needs ``clouds_dendrite_all.npz`` from ``--all-cells``).
 Two methods, each giving a posterior over the k major clusters plus a "none"
 option (label 0, like the consensus outliers):
 
-knn       The query is resampled like a Stage-B replicate and its W2 distance
-          to every clustered (non-outlier) reference neuron is averaged over
-          ``n_reps`` resamples. The ``n_neighbours`` nearest references vote
-          with weight ``exp(-d^2 / tau)``. A query farther from its nearest
+knn       The exact W2 between the query's complete synapse cloud and that
+          of every clustered (non-outlier) reference neuron (``distances.py``;
+          the reference-to-reference matrix is Stage B's ``exact.npz``). The
+          ``n_neighbours`` nearest references vote with weight
+          ``exp(-d^2 / tau)``. A query farther from its nearest
           reference than the ``reject_quantile`` of held-out reference
           neurons gets label 0.
 template  The synapses of each cluster's members are pooled (soma-centred)
@@ -38,67 +39,12 @@ agreement between the methods.
 from __future__ import annotations
 
 import numpy as np
-import pandas as pd
-from joblib import Parallel, delayed
 from scipy.special import logsumexp
 from sklearn.metrics import adjusted_mutual_info_score
 
-from .distances import pairwise_points, w2_points
 from .templates import fit_template
 
 METHODS = ("knn", "template")
-
-
-# ---------------------------------------------------------------------------
-# Resampling and query-to-reference distances
-# ---------------------------------------------------------------------------
-
-def resample(clouds, indices, n_points, use_weights, rng):
-    """One weighted resample of ``n_points`` synapses per neuron, (N, n_points, 3)."""
-    sample = np.empty((len(indices), n_points, 3))
-    for row, index in enumerate(indices):
-        points = clouds.neuron_points(index).astype(float)
-        prob = None
-        if use_weights:
-            weight = clouds.neuron_weights(index).astype(float)
-            prob = weight / weight.sum()
-        sample[row] = points[rng.choice(points.shape[0], size=n_points, replace=True, p=prob)]
-    return sample
-
-
-def _cross_block(query, reference):
-    return np.array([[w2_points(q, r) for r in reference] for q in query], dtype=np.float32)
-
-
-def cross_distances(query, reference, n_jobs):
-    """W2 between every query and every reference cloud, (Q, R)."""
-    n_blocks = max(1, min(len(query), 4 * n_jobs))
-    blocks = [b for b in np.array_split(np.arange(len(query)), n_blocks) if b.size]
-    results = Parallel(n_jobs=n_jobs)(delayed(_cross_block)(query[b], reference) for b in blocks)
-    return np.vstack(results)
-
-
-def query_reference_distances(query_clouds, query_indices, reference_clouds, reference_indices, *,
-                              n_reps, n_points, use_weights, seed, n_jobs):
-    """Query-to-reference W2 averaged over ``n_reps`` independent resamples."""
-    total = np.zeros((len(query_indices), len(reference_indices)))
-    for rep in range(n_reps):
-        query = resample(query_clouds, query_indices, n_points, use_weights,
-                         np.random.default_rng([seed, 1, rep]))
-        reference = resample(reference_clouds, reference_indices, n_points, use_weights,
-                             np.random.default_rng([seed, 2, rep]))
-        total += cross_distances(query, reference, n_jobs)
-    return total / n_reps
-
-
-def reference_distances(clouds, indices, *, n_reps, n_points, use_weights, seed, n_jobs):
-    """Reference-to-reference W2 with the same resampling noise as the query distances."""
-    total = np.zeros((len(indices), len(indices)))
-    for rep in range(n_reps):
-        sample = resample(clouds, indices, n_points, use_weights,
-                          np.random.default_rng([seed, 3, rep]))
-        total += pairwise_points(sample, n_jobs)
-    return total / n_reps
 
 
 # ---------------------------------------------------------------------------

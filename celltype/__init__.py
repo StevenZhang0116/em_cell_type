@@ -10,7 +10,7 @@ separately.
 Modules:
   config      paths, dataset tables, output layout, Slurm-aware CPU count
   clouds      extract per-neuron synapse clouds and read them back (CSR)
-  distances   weighted resampling and neuron-to-neuron Wasserstein distances
+  distances   exact Wasserstein distances between complete synapse clouds, bootstrap replicates
   shared      shared-component mixture, per-neuron mixing weights, MW2 distances
   clustering  hierarchical clustering, stability, noise floor, label/confound checks
   templates   cylindrically constrained weighted GMM used as cluster templates

@@ -21,35 +21,69 @@ from celltype.clouds import Clouds, build_side
 # Distances
 # ---------------------------------------------------------------------------
 
-def test_w2_points_identical_is_zero():
-    x = np.random.default_rng(0).normal(size=(50, 2))
-    assert distances.w2_points(x, x) == pytest.approx(0.0)
+def test_w2_identical_is_zero():
+    x = np.random.default_rng(0).normal(size=(50, 3))
+    assert distances.w2_points(x, x) == pytest.approx(0.0, abs=1e-9)
 
 
-def test_w2_points_translation_equals_shift():
-    x = np.random.default_rng(1).normal(size=(80, 2))
-    shift = np.array([3.0, -4.0])
+def test_w2_translation_equals_shift():
+    x = np.random.default_rng(1).normal(size=(80, 3))
+    shift = np.array([3.0, -4.0, 0.0])
     assert distances.w2_points(x, x + shift) == pytest.approx(5.0)
 
 
-def test_w2_points_is_permutation_invariant():
-    x = np.random.default_rng(2).normal(size=(40, 2))
-    y = np.random.default_rng(3).normal(size=(40, 2))
-    assert distances.w2_points(x, y) == pytest.approx(distances.w2_points(x[::-1], y))
+def test_w2_is_a_distance_between_weighted_measures():
+    rng = np.random.default_rng(2)
+    x = rng.normal(size=(40, 3))
+    w = rng.uniform(0.5, 2.0, 40)
+    assert distances.w2(x, w, x + np.array([0.0, 3.0, 4.0]), w) == pytest.approx(5.0)
+    # Splitting a point's mass over two copies describes the same measure.
+    split = np.concatenate([w, w[:10] / 2])
+    split[:10] /= 2
+    assert distances.w2(x, w, np.concatenate([x, x[:10]]), split) == pytest.approx(0.0, abs=1e-9)
+    # Masses need not be normalised, sizes may differ, and the distance is symmetric.
+    y = rng.normal(size=(25, 3))
+    assert distances.w2(x, w, y, np.ones(25)) == pytest.approx(distances.w2(x, 3 * w, y, 7 * np.ones(25)))
+    assert distances.w2(x, w, y, np.ones(25)) == pytest.approx(distances.w2(y, np.ones(25), x, w))
+
+
+def test_flat_clouds_and_bootstrap():
+    rng = np.random.default_rng(3)
+    clouds = [rng.normal(size=(n, 3)) for n in (30, 50, 20)]
+    masses = [rng.uniform(0.5, 2.0, n) for n in (30, 50, 20)]
+    flat = distances.FlatClouds.from_list(clouds, masses)
+    assert len(flat) == 3 and list(flat.sizes) == [30, 50, 20]
+    x, m = flat.cloud(1)
+    assert np.allclose(x, clouds[1]) and np.allclose(m, masses[1] / masses[1].sum())
+    boot = distances.bootstrap(flat, np.random.default_rng(0))
+    assert len(boot) == 3
+    for i in range(3):
+        bx, bm = boot.cloud(i)
+        # Bootstrap points are original points with multiplicities in steps of 1/n.
+        assert bm.sum() == pytest.approx(1.0) and 0 < bm.size <= flat.sizes[i]
+        assert set(map(tuple, bx)).issubset(set(map(tuple, flat.cloud(i)[0])))
+        assert np.allclose(bm * flat.sizes[i], np.round(bm * flat.sizes[i]))
 
 
 @pytest.mark.parametrize("n, n_blocks", [(1, 4), (7, 3), (100, 16)])
 def test_balanced_row_blocks_cover_every_row_once(n, n_blocks):
     blocks = distances.balanced_row_blocks(n, n_blocks)
     assert np.array_equal(np.concatenate(blocks), np.arange(n))
+    sized = distances.balanced_row_blocks(n, n_blocks, sizes=np.arange(1, n + 1))
+    assert np.array_equal(np.concatenate(sized), np.arange(n))
 
 
-def test_pairwise_points_is_symmetric_with_zero_diagonal():
-    sample = np.random.default_rng(4).normal(size=(6, 30, 2))
-    matrix = distances.pairwise_points(sample, n_jobs=1)
-    assert np.allclose(matrix, matrix.T)
-    assert np.allclose(np.diag(matrix), 0.0)
-    assert matrix[1, 4] == pytest.approx(distances.w2_points(sample[1], sample[4]), rel=1e-6)
+def test_pairwise_cross_and_paired_agree_with_w2():
+    rng = np.random.default_rng(4)
+    flat = distances.FlatClouds.from_list([rng.normal(size=(n, 3)) for n in (30, 20, 25, 40, 35, 30)])
+    matrix = distances.pairwise(flat, n_jobs=1)
+    assert np.allclose(matrix, matrix.T) and np.allclose(np.diag(matrix), 0.0)
+    assert matrix[1, 4] == pytest.approx(distances.w2(*flat.cloud(1), *flat.cloud(4)), rel=1e-6)
+    other = distances.FlatClouds.from_list([rng.normal(size=(n, 3)) for n in (10, 15)])
+    across = distances.cross(other, flat, n_jobs=2)
+    assert across.shape == (2, 6)
+    assert across[1, 3] == pytest.approx(distances.w2(*other.cloud(1), *flat.cloud(3)), rel=1e-6)
+    assert np.allclose(distances.paired(flat, flat, n_jobs=1), 0.0, atol=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -129,9 +163,11 @@ def test_pipeline_stages_b_and_c_end_to_end(tmp_path, monkeypatch):
     from celltype import config, pipeline
 
     clouds = _toy_clouds(tmp_path, monkeypatch)
+    pipeline.compute_exact_distances(clouds, "toy", "t", "axon", min_synapses=100, use_weights=True,
+                                     seed=0)
     for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "t", "axon", rep, n_points=40,
-                                   min_synapses=100, use_weights=True, seed=0)
+        pipeline.compute_distances(clouds, "toy", "t", "axon", rep, min_synapses=100,
+                                   use_weights=True, seed=0)
     pipeline.cluster_neurons("toy", "t", "axon", linkage="average", k_values=[2, 3, 4],
                              min_cluster_size=2, k=3)
 
@@ -139,17 +175,39 @@ def test_pipeline_stages_b_and_c_end_to_end(tmp_path, monkeypatch):
     table = pd.read_csv(outdir / "neurons.csv")
     assert adjusted_rand_score(table["cell_type"], table["cluster_k3"]) == pytest.approx(1.0)
     assert (outdir / "co_clustering.png").exists()
+    # The clustered distance is the exact matrix of the complete clouds, not the replicate mean.
+    with open(outdir / "summary.json") as handle:
+        assert json.load(handle)["distance_matrix"] == "exact"
+    with np.load(config.distance_dir("toy", "t", "axon") / "exact.npz") as data:
+        exact = data["distance"]
+        assert list(data["n_synapses"]) == [150] * 9 and data["alignment_check_pairs"].shape[1] == 2
+    assert np.allclose(np.load(outdir / "distance.npy"), exact)
+    # Bootstrap noise floor (about 10 um on 150-point clouds) far below the group separation.
+    assert (table["self_distance_um"] > 0).all() and (table["self_distance_um"] < 30).all()
 
 
 def test_pipeline_random_subset_is_shared_across_replicates(tmp_path, monkeypatch):
     from celltype import config, pipeline
 
     clouds = _toy_clouds(tmp_path, monkeypatch)
+    pipeline.compute_exact_distances(clouds, "toy", "t", "axon", min_synapses=100, use_weights=True,
+                                     seed=0, n_neurons=6, max_synapses=100)
     for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "t", "axon", rep, n_points=20,
-                                   min_synapses=100, use_weights=True, seed=0, n_neurons=6)
-    matrices, _, eligible = clustering.load_replicates(config.distance_dir("toy", "t", "axon"))
+        pipeline.compute_distances(clouds, "toy", "t", "axon", rep, min_synapses=100,
+                                   use_weights=True, seed=0, n_neurons=6, max_synapses=100)
+    directory = config.distance_dir("toy", "t", "axon")
+    matrices, _, eligible = clustering.load_replicates(directory)
     assert matrices.shape == (2, 6, 6) and eligible.size == 6
+    assert clustering.load_exact(directory, eligible).shape == (6, 6)
+    with pytest.raises(ValueError):
+        clustering.load_exact(directory, eligible[:5])
+    # The cap subsamples the clouds above it, the same way for every call.
+    with np.load(directory / "exact.npz") as data:
+        assert int(data["max_synapses"]) == 100 and list(data["n_synapses"]) == [100] * 6
+    capped = distances.gather(clouds, eligible, max_synapses=100, seed=0)
+    again = distances.gather(clouds, eligible[::-1], max_synapses=100, seed=0)
+    assert np.allclose(capped.cloud(0)[0], again.cloud(5)[0])
+    assert list(distances.gather(clouds, eligible).sizes) == [150] * 6
     # K at least the number of eligible neurons means all of them.
     assert pipeline.select_neurons(clouds, 100, 50, seed=0).size == 9
 
@@ -159,14 +217,16 @@ def test_assign_stage_recovers_toy_groups(tmp_path, monkeypatch):
     from celltype import config, pipeline
 
     clouds = _toy_clouds(tmp_path, monkeypatch, per_group=5)
+    pipeline.compute_exact_distances(clouds, "toy", "t", "axon", min_synapses=100, use_weights=True,
+                                     seed=0, n_neurons=12)
     for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "t", "axon", rep, n_points=40,
-                                   min_synapses=100, use_weights=True, seed=0, n_neurons=12)
+        pipeline.compute_distances(clouds, "toy", "t", "axon", rep, min_synapses=100,
+                                   use_weights=True, seed=0, n_neurons=12)
     pipeline.cluster_neurons("toy", "t", "axon", linkage="average", k_values=[2, 3, 4],
                              min_cluster_size=2, k=3)
-    pipeline.assign_neurons("toy", "t", "axon", query="rest", n_points=40, min_synapses=100,
-                            use_weights=True, seed=0, n_reps=2, n_neighbours=3, template_k_max=2,
-                            template_points=2000, cv_folds=2, reject_quantile=1.0, k=3)
+    pipeline.assign_neurons("toy", "t", "axon", query="rest", min_synapses=100, use_weights=True,
+                            seed=0, n_neighbours=3, template_k_max=2, template_points=2000,
+                            cv_folds=2, reject_quantile=1.0, k=3)
 
     outdir = config.assign_dir("toy", "t", "axon", "rest")
     with open(outdir / "summary.json") as handle:
@@ -190,9 +250,9 @@ def test_assign_stage_recovers_toy_groups(tmp_path, monkeypatch):
         assert (outdir / name).exists()
 
     # query="none": calibration and validation only.
-    pipeline.assign_neurons("toy", "t", "axon", query="none", n_points=40, min_synapses=100,
-                            use_weights=True, seed=0, n_reps=2, n_neighbours=3, template_k_max=2,
-                            template_points=2000, cv_folds=2, reject_quantile=1.0, k=3)
+    pipeline.assign_neurons("toy", "t", "axon", query="none", min_synapses=100, use_weights=True,
+                            seed=0, n_neighbours=3, template_k_max=2, template_points=2000,
+                            cv_folds=2, reject_quantile=1.0, k=3)
     outdir = config.assign_dir("toy", "t", "axon", "none")
     with open(outdir / "summary.json") as handle:
         summary = json.load(handle)
@@ -203,25 +263,17 @@ def test_assign_stage_recovers_toy_groups(tmp_path, monkeypatch):
 def test_trial_name_encodes_every_parameter():
     from celltype import config
 
-    base = dict(n_neurons=10, n_reps=2, n_points=200, min_synapses=100, use_weights=True,
+    base = dict(n_neurons=10, n_reps=2, min_synapses=100, use_weights=True,
                 seed=1, linkage="average", k_min=2, k_max=3, min_cluster_size=5)
-    assert config.trial_name(**base) == "n10_rep2_pt200_min100_weighted_seed1_average_k2-3_mcs5"
+    assert config.trial_name(**base) == "n10_rep2_full_min100_weighted_seed1_average_k2-3_mcs5"
+    assert config.trial_name(**base, max_synapses=3000).split("_")[2] == "max3000"
     assert config.trial_name(**base, method="shared", shared_k=30, shared_alpha=10.0) \
         == "n10_rep2_shared30_a10_min100_weighted_seed1_average_k2-3_mcs5"
     assert config.trial_name(**{**base, "n_neurons": None}).startswith("nall_")
     assert config.trial_name(**base, align=True, min_border=50.0) \
-        == "n10_rep2_pt200_aligned_min100_border50_weighted_seed1_average_k2-3_mcs5"
-    # Per-side point counts: one token when equal, axon-dendrite otherwise.
-    assert config.points_per_side(None) == config.DEFAULT_N_POINTS == {"axon": 200, "dendrite": 2000}
-    assert config.points_per_side(50) == {"axon": 50, "dendrite": 50}
-    assert config.trial_name(**{**base, "n_points": None}) \
-        == "n10_rep2_pt200-2000_min100_weighted_seed1_average_k2-3_mcs5"
-    assert config.trial_name(**{**base, "n_points": {"axon": 200, "dendrite": 500}}).split("_")[2] \
-        == "pt200-500"
-    assert config.trial_name(**{**base, "n_points": {"axon": 300, "dendrite": 300}}).split("_")[2] \
-        == "pt300"
+        == "n10_rep2_full_aligned_min100_border50_weighted_seed1_average_k2-3_mcs5"
     names = {config.trial_name(**{**base, key: value}) for key, value in
-             [("n_reps", 3), ("n_points", 100), ("min_synapses", 50), ("use_weights", False),
+             [("n_reps", 3), ("max_synapses", 1000), ("min_synapses", 50), ("use_weights", False),
               ("seed", 2), ("linkage", "complete"), ("k_max", 5), ("min_cluster_size", 2),
               ("method", "shared"), ("align", True), ("min_border", 50.0)]}
     assert len(names) == 11 and config.trial_name(**base) not in names
@@ -262,11 +314,11 @@ def test_aligned_clouds_ignore_in_plane_rotation(tmp_path):
     assert aligned.neuron_points(1)[:, 0].mean() > 50.0
     assert np.allclose(aligned.neuron_points(1)[:, 1], plain.neuron_points(1)[:, 1])
     # The rotation search finds the same minimum from the unaligned clouds.
-    assert distances.rotation_min_w2(plain.neuron_points(0), plain.neuron_points(1), n_angles=4) \
-        == pytest.approx(0.0, abs=1e-6)
-    pairs, given, best = distances.alignment_check(
-        np.stack([plain.neuron_points(0), plain.neuron_points(1)]), np.random.default_rng(0),
-        n_pairs=6, n_angles=4)
+    uniform = np.ones(n)
+    assert distances.rotation_min_w2(plain.neuron_points(0), uniform, plain.neuron_points(1), uniform,
+                                     n_angles=4) == pytest.approx(0.0, abs=1e-6)
+    pairs, given, best = distances.alignment_check(distances.gather(plain, [0, 1]),
+                                                   np.random.default_rng(0), n_pairs=6, n_angles=4)
     assert pairs.shape[1] == 2 and np.all(best <= given + 1e-9)
 
 
@@ -452,13 +504,15 @@ def test_shared_pipeline_recovers_toy_groups(tmp_path, monkeypatch):
                                       seed=0, use_weights=True, n_components=3, fit_points=1000)
     assert config.shared_model_path("toy", "s", "axon").exists() and model.n_components == 3
     for rep in range(2):
-        pipeline.compute_distances(clouds, "toy", "s", "axon", rep, n_points=40, min_synapses=100,
+        pipeline.compute_distances(clouds, "toy", "s", "axon", rep, min_synapses=100,
                                    use_weights=True, seed=0, method="shared", shared_model=model,
                                    shared_alpha=5.0)
     pipeline.cluster_neurons("toy", "s", "axon", linkage="average", k_values=[2, 3, 4],
                              min_cluster_size=2, k=3)
     table = pd.read_csv(config.cluster_dir("toy", "s", "axon") / "neurons.csv")
     assert adjusted_rand_score(table["cell_type"], table["cluster_k3"]) == pytest.approx(1.0)
+    with open(config.cluster_dir("toy", "s", "axon") / "summary.json") as handle:
+        assert json.load(handle)["distance_matrix"] == "replicate_mean"   # no exact.npz for shared
     with np.load(config.distance_dir("toy", "s", "axon") / "rep000.npz") as data:
         assert str(data["method"]) == "shared" and data["theta"].shape == (9, 3)
     # Reloading gives the same model.
