@@ -47,9 +47,8 @@ def test_disjoint_splits_and_reproducibility(n, m):
         assert np.array_equal(np.sort(np.concatenate([a, b])), np.arange(n))
 
 
-def test_split_weights_are_retained_once_and_alignment_is_fixed(tmp_path):
-    original = _clouds(tmp_path / "clouds.npz")
-    clouds = Clouds(tmp_path / "clouds.npz", align=True)
+def test_split_weights_are_retained_once(tmp_path):
+    clouds = _clouds(tmp_path / "clouds.npz")
     indices = np.arange(len(clouds))
     weighted = distances.gather(clouds, indices)
     uniform = distances.gather(clouds, indices, use_weights=False)
@@ -61,7 +60,7 @@ def test_split_weights_are_retained_once_and_alignment_is_fixed(tmp_path):
             x, mass = half.cloud(row)
             assert np.array_equal(x, clouds.neuron_points(row)[pick])
             assert np.array_equal(x, unweighted.cloud(row)[0])  # weights do not change the split
-            weight = original.neuron_weights(row)[pick]
+            weight = clouds.neuron_weights(row)[pick]
             assert np.allclose(mass, weight / weight.sum())
             assert np.allclose(unweighted.cloud(row)[1], np.full(20, 1 / 20))
 
@@ -197,7 +196,6 @@ def test_entry_point_fixed_cohort_outputs_and_safe_reuse(tmp_path, monkeypatch):
     old = report["options"]
     changed = {**old, "source": {**old["source"], "sha256": "different"}}
     assert config.split_half_name(old) != config.split_half_name(changed)
-    assert config.split_half_name(old) != config.split_half_name({**old, "align": True})
     assert config.split_half_name(old) != config.split_half_name({**old, "use_weights": False})
     assert config.split_half_name(old) != config.split_half_name({**old, "n_pairs": 0})
     assert config.split_half_name(old) != config.split_half_name({**old, "min_border_um": 60.0})

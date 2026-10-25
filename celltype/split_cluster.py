@@ -18,23 +18,11 @@ from scipy.optimize import linear_sum_assignment
 from sklearn.metrics import adjusted_rand_score
 
 from . import clustering, plotting
-from .clouds import align_points
-from .distances import FlatClouds, bootstrap, pairwise
+from .distances import bootstrap, pairwise
 from .split_half import split_clouds
 
 
 VERSION = 1
-
-
-def prepare_half(flat, *, align, use_weights):
-    """Estimate the frame from this half alone, then set its transport masses.
-
-    As in Clouds, orientation uses stored border weights even with --no-weights.
-    The frame is held fixed during the inner bootstrap, as in the full pipeline.
-    """
-    points = align_points(flat.points, flat.mass, flat.offsets) if align else flat.points.copy()
-    mass = flat.mass.copy() if use_weights else np.repeat(1.0 / flat.sizes, flat.sizes)
-    return FlatClouds(points, mass, flat.offsets.copy())
 
 
 def fit_half(flat, *, n_reps, seed, n_jobs, linkage, k_values, min_cluster_size, k=None):
@@ -197,8 +185,6 @@ def run(flat, options, outdir, *, n_jobs=1, overwrite=False):
             else:
                 print(f"validation m={m}, split {rep + 1}/{options['outer_reps']}", flush=True)
                 a, b = split_clouds(flat, np.asarray(options["cell_ids"]), m, seed=options["seed"], rep=rep)
-                preparation = dict(align=options["align"], use_weights=options["use_weights"])
-                a, b = prepare_half(a, **preparation), prepare_half(b, **preparation)
                 result = fit_split(a, b, n_reps=options["inner_reps"], seed=[options["seed"], 29, m, rep],
                                    n_jobs=n_jobs, linkage=options["linkage"], k_values=options["k_values"],
                                    min_cluster_size=options["min_cluster_size"], k=options["k"])

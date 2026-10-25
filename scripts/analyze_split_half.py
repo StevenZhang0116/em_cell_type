@@ -9,7 +9,7 @@ See docs/split_half.md for interpretation, outputs and computational cost.
 Example::
 
     python -u scripts/analyze_split_half.py --sides axon --n-neurons 200 --points-per-half 100 200 --n-reps 100 --between-pairs 1000
-    python -u scripts/analyze_split_half.py --sides dendrite --n-neurons 200 --align --min-border-distance 50
+    python -u scripts/analyze_split_half.py --sides dendrite --n-neurons 200 --min-border-distance 50
 """
 
 from __future__ import annotations
@@ -56,8 +56,6 @@ def main(argv=None):
     parser.add_argument("--n-neurons", type=_positive, default=None)
     parser.add_argument("--min-synapses", type=_positive, default=100)
     parser.add_argument("--min-border-distance", type=float, default=0.0)
-    parser.add_argument("--align", action="store_true",
-                        help="both halves inherit the canonical rotation of the complete cloud")
     parser.add_argument("--no-weights", action="store_true")
     parser.add_argument("--seed", type=_nonnegative, default=20261019)
     parser.add_argument("--overwrite", action="store_true")
@@ -74,11 +72,11 @@ def main(argv=None):
         path = clouds_path(args.dataset, side)
         if not path.exists():
             parser.error(f"{path} not found; run scripts/run_pipeline.py --dataset {args.dataset} --stages extract first")
-        clouds = Clouds(path, align=args.align)
+        clouds = Clouds(path)
         options = {"schema_version": 1, "dataset": args.dataset, "side": side,
                    "points_per_half": sizes, "n_reps": args.n_reps, "n_pairs": args.between_pairs,
                    "n_neurons": args.n_neurons, "min_synapses": args.min_synapses,
-                   "min_border_um": args.min_border_distance, "align": args.align,
+                   "min_border_um": args.min_border_distance,
                    "use_weights": not args.no_weights, "seed": args.seed,
                    # The fingerprint prevents stale reuse when Stage A was regenerated in place.
                    "source": file_fingerprint(path)}

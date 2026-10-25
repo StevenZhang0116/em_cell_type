@@ -22,7 +22,7 @@ shared by all components, one lateral variance per component) or `normal` (full
 covariances).
 
 Neurons are selected like a pipeline trial (`--n-neurons`, `--min-synapses`,
-`--min-border-distance`, `--seed`, `--align`), so `<side>_neurons.csv` joins a trial's
+`--min-border-distance`, `--seed`), so `<side>_neurons.csv` joins a trial's
 `neurons.csv` on `pt_root_id`. Neurons are fitted in parallel over the allocated CPUs (each
 neuron's own fits run one after another), and the script logs the fitting plan (candidate k
 per neuron, EM fits per neuron) and then one line per finished neuron with its chosen k,

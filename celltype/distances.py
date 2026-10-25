@@ -118,20 +118,6 @@ def w2_points(x, y):
     return w2(x, np.ones(len(x)), y, np.ones(len(y)))
 
 
-def rotation_min_w2(x, mass_x, y, mass_y, n_angles=36):
-    """Smallest W2 over ``n_angles`` rotations of ``y`` about the vertical (dy) axis.
-
-    The reference that canonical alignment (``Clouds(align=True)``) tries to
-    reach cheaply; the grid includes angle 0, so the result never exceeds ``w2``.
-    """
-    best = np.inf
-    for angle in np.linspace(0, 2 * np.pi, n_angles, endpoint=False):
-        cos, sin = np.cos(angle), np.sin(angle)
-        rotated = np.column_stack([cos * y[:, 0] + sin * y[:, 2], y[:, 1], -sin * y[:, 0] + cos * y[:, 2]])
-        best = min(best, w2(x, mass_x, rotated, mass_y))
-    return best
-
-
 # ---------------------------------------------------------------------------
 # Parallel pairwise matrices
 # ---------------------------------------------------------------------------
@@ -199,28 +185,8 @@ def paired(a, b, n_jobs):
 
 
 # ---------------------------------------------------------------------------
-# Alignment check, exact matrix, bootstrap replicate
+# Exact matrix, bootstrap replicate
 # ---------------------------------------------------------------------------
-
-def _check_pair(flat, i, j, n_angles):
-    x, mass_x = flat.cloud(i)
-    y, mass_y = flat.cloud(j)
-    return w2(x, mass_x, y, mass_y), rotation_min_w2(x, mass_x, y, mass_y, n_angles)
-
-
-def alignment_check(flat, rng, n_pairs=100, n_angles=36, n_jobs=1):
-    """For random pairs of clouds: W2 as given vs the minimum over in-plane rotations.
-
-    Returns the pairs, the given distances and the rotation minima. A median
-    ratio well above 1 means the in-plane orientation dominates the distance.
-    """
-    pairs = rng.choice(len(flat), size=(n_pairs, 2))
-    pairs = pairs[pairs[:, 0] != pairs[:, 1]]
-    results = Parallel(n_jobs=n_jobs)(delayed(_check_pair)(flat, i, j, n_angles) for i, j in pairs)
-    given = np.array([given for given, _ in results])
-    best = np.array([best for _, best in results])
-    return pairs, given, best
-
 
 def exact_distances(flat, n_jobs):
     """The exact distance matrix of the complete clouds."""

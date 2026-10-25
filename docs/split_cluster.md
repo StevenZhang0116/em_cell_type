@@ -17,7 +17,7 @@ python -u scripts/run_pipeline.py \
   --stages validate \
   --n-neurons 100 --min-synapses 400 --min-border-distance 50 \
   --validation-points-per-half 200 --validation-reps 10 \
-  --n-reps 5 --k-min 2 --k-max 10 --min-cluster-size 5 --align
+  --n-reps 5 --k-min 2 --k-max 10 --min-cluster-size 5
 ```
 
 To include the final full-cloud fit, change only `--stages` to
@@ -53,16 +53,9 @@ bootstrap matrices. Start small before increasing either count.
    Inner bootstrap draws follow the existing weighted empirical bootstrap:
    multinomial counts with probabilities equal to normalized mass, followed by
    count-based masses (the border weights are not applied a second time).
-6. With `--align`, estimate each neuron's canonical rotation separately from its
-   A synapses and its B synapses. Neither half uses the full-cloud orientation or
-   the other half's points. Keep each half's frame fixed for its inner bootstrap,
-   matching the main pipeline's order of operations. As in `Clouds`, orientation
-   uses stored border weights even when transport uses `--no-weights`.
 
-The cohort and soma reference are fixed inputs. Independent half preprocessing
-does not make complementary splits independent biological observations. Under a
-synapse cap, the main pipeline estimates its frame before capping, whereas each
-validation half must estimate its own frame from the sampled half only.
+The cohort and soma reference are fixed inputs; complementary splits are not
+independent biological observations.
 
 ## The estimator and the held-out quantities
 
@@ -161,7 +154,7 @@ discrete cell types or validate assignments to new neurons. Synapse dependence
 along branches is not modeled; branch-aware resampling and independent biological
 replication remain separate questions.
 
-The synthetic test suite checks recovery, A/B isolation, independent rotation,
+The synthetic test suite checks recovery, A/B isolation,
 shared estimator compatibility, outliers and impossible k, label permutation,
 held-out pair selection, parallel reproducibility, cache identity, interruption
 and resume, and the combined CLI with full-fit/assignment-reference compatibility:

@@ -28,12 +28,6 @@ from appearing as sample-size effects. The summary reports the counts excluded
 by each filter. Pair selection is fixed across m/repetitions too. Point selections
 are seeded by neuron ID, m and repetition, independently of worker scheduling.
 
-With `--align`, the canonical rotation is estimated once from each **complete**
-cloud using the existing `Clouds` implementation. Both halves inherit that frame;
-this measures sampling variability conditional on the chosen alignment, not the
-uncertainty of estimating a rotation from a partial cloud. As in the existing
-pipeline, that rotation uses the stored border weights even with `--no-weights`.
-
 ## Running
 
 Use the same environment as the main pipeline (`jobs/env.sh` on an allocated node).
@@ -42,7 +36,7 @@ First run Stage A if `clouds_<side>.npz` is not present. Then, for example:
 
 ```bash
 $PYTHON -u scripts/analyze_split_half.py --sides axon --n-neurons 200 --points-per-half 100 200 --n-reps 100 --between-pairs 1000
-$PYTHON -u scripts/analyze_split_half.py --sides dendrite --n-neurons 200 --points-per-half 100 200 400 --align --min-border-distance 50
+$PYTHON -u scripts/analyze_split_half.py --sides dendrite --n-neurons 200 --points-per-half 100 200 400 --min-border-distance 50
 ```
 
 Defaults: both sides, m = 100 and 200, 100 repetitions, all eligible neurons and up
@@ -99,8 +93,7 @@ sample sizes alone do not create a common null distribution.
 Disjoint halves can still share branch-level dependence and the same truncation,
 segmentation or detection biases. Stable individual differences can also lie on a
 continuous anatomical spectrum. This diagnostic does not establish discrete cell
-types, quantify alignment-estimation error, or implement an exchangeability-based
-two-sample permutation test.
+types or implement an exchangeability-based two-sample permutation test.
 
 ## Clustering validation
 

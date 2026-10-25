@@ -13,12 +13,8 @@ can assign to the clusters.
 Coordinates follow mixture_all.py: ``pt_position_*_trafo`` in nm, converted
 to micrometres; ``pt_position_y_trafo`` is cortical depth and x/z span the
 cortical plane. Each synapse is stored as its soma-centred offset
-``(dx, dy, dz)``, which ``Clouds.neuron_points`` returns. With
-``Clouds(path, align=True)`` every cloud is first rotated about the soma's
-vertical axis into a canonical orientation (principal lateral axis of the
-weighted second moment about the soma on +x, lateral centroid on the positive
-side), so that the arbitrary in-plane direction of an arbor no longer enters
-any comparison while its anisotropy does. Border-compensation weights are
+``(dx, dy, dz)``, which ``Clouds.neuron_points`` returns; the in-plane
+orientation of an arbor is kept as it is. Border-compensation weights are
 ``weights_pre`` / ``weights_post`` (MICrONS only; ones for V1DD); ``dist_border``
 (soma distance to the volume border) is stored in nm as in the cell table.
 
@@ -157,62 +153,16 @@ def build_side(cells, synapses, side, lateral_cutoff):
 # Reading
 # ---------------------------------------------------------------------------
 
-def canonical_rotation(dx, dz, weight, offsets):
-    """Per-neuron (cos, sin) of the in-plane rotation into the canonical frame.
-
-    The frame puts the principal axis of the weighted lateral second moment
-    about the soma on +x and the lateral centroid on the positive x side. A
-    rotationally symmetric cloud gets an arbitrary angle, which then does not
-    matter. Flipping by 180 degrees is a proper rotation, so mirror-image
-    arbors stay distinct.
-    """
-    dx, dz, weight = (np.asarray(a, dtype=float) for a in (dx, dz, weight))
-    starts = offsets[:-1]
-    nonempty = np.diff(offsets) > 0
-
-    def per_neuron(values):
-        total = np.zeros(starts.size)
-        total[nonempty] = np.add.reduceat(values, starts[nonempty])
-        return total
-
-    mxx, mzz, mxz = per_neuron(weight * dx * dx), per_neuron(weight * dz * dz), per_neuron(weight * dx * dz)
-    theta = 0.5 * np.arctan2(2 * mxz, mxx - mzz)
-    cos, sin = np.cos(theta), np.sin(theta)
-    centroid_x = cos * per_neuron(weight * dx) + sin * per_neuron(weight * dz)
-    flip = centroid_x < 0
-    cos[flip], sin[flip] = -cos[flip], -sin[flip]
-    return cos, sin
-
-
-def align_points(points, weight, offsets):
-    """Canonical rotation of each flat cloud, estimated only from the supplied points.
-
-    This shares Clouds' orientation rule; validation calls it independently on
-    each half. The input arrays are never modified.
-    """
-    points = np.asarray(points, dtype=float)
-    cos, sin = canonical_rotation(points[:, 0], points[:, 2], weight, offsets)
-    cos, sin = np.repeat(cos, np.diff(offsets)), np.repeat(sin, np.diff(offsets))
-    rotated = points.copy()
-    rotated[:, 0] = cos * points[:, 0] + sin * points[:, 2]
-    rotated[:, 2] = -sin * points[:, 0] + cos * points[:, 2]
-    return rotated
-
-
 class Clouds:
-    """Read-only view of one side's saved clouds; ``align=True`` canonically rotates every cloud."""
+    """Read-only view of one side's saved clouds."""
 
-    def __init__(self, path, align=False):
+    def __init__(self, path):
         self.path = Path(path)
         with np.load(path, allow_pickle=False) as data:
             self.meta = {key: data[key] for key in data.files}
         self.cell_ids = self.meta["cell_ids"]
         self.offsets = self.meta["offsets"]
         self.n_synapses = np.diff(self.offsets)
-        self.align = bool(align)
-        if self.align:
-            self._cos, self._sin = canonical_rotation(self.meta["dx"], self.meta["dz"],
-                                                      self.meta["weight"], self.offsets)
 
     def __len__(self):
         return self.cell_ids.size
@@ -223,11 +173,7 @@ class Clouds:
     def neuron_points(self, index):
         """Soma-relative synapse positions (n, 3) ``(dx, dy, dz)`` of one neuron, in um."""
         span = self._span(index)
-        dx, dy, dz = self.meta["dx"][span], self.meta["dy"][span], self.meta["dz"][span]
-        if self.align:
-            cos, sin = self._cos[index], self._sin[index]
-            dx, dz = cos * dx + sin * dz, -sin * dx + cos * dz
-        return np.column_stack([dx, dy, dz])
+        return np.column_stack([self.meta["dx"][span], self.meta["dy"][span], self.meta["dz"][span]])
 
     def neuron_weights(self, index):
         return self.meta["weight"][self._span(index)]

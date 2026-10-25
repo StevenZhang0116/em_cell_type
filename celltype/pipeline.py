@@ -28,7 +28,7 @@ from . import assign, clustering, plotting, shared, split_cluster
 from .clouds import Clouds, build_side, load_cell_table, load_synapses, proofread_cells
 from .config import (SIDES, allocated_cpus, assign_dir, cluster_dir, clouds_path, distance_dir,
                      file_fingerprint, shared_model_path, validation_dir)
-from .distances import alignment_check, bootstrap_replicate, cross, exact_distances, gather, pairwise
+from .distances import bootstrap_replicate, cross, exact_distances, gather, pairwise
 from .split_half import half_sizes
 
 
@@ -114,7 +114,7 @@ def validate_neurons(dataset, trial, side, *, points_per_half, outer_reps, param
     sizes = half_sizes(points_per_half)
     if outer_reps < 1 or params["n_reps"] < 1:
         raise ValueError("outer and inner replicate counts must be positive")
-    clouds = Clouds(clouds_path(dataset, side), align=False)  # never leak the full-cloud frame
+    clouds = Clouds(clouds_path(dataset, side))
     eligible = select_neurons(clouds, params["min_synapses"], params["n_neurons"], params["seed"], params["min_border"])
     if eligible.size < 2:
         raise ValueError("validation needs at least two selected neurons")
@@ -125,12 +125,11 @@ def validate_neurons(dataset, trial, side, *, points_per_half, outer_reps, param
                          "validation never silently changes the full pipeline's cohort")
     if params["max_synapses"] is not None and params["max_synapses"] < required:
         raise ValueError(f"--max-synapses must be at least {required} for these validation half sizes")
-    # Retain border weights for independent orientation even under --no-weights.
-    flat = gather(clouds, eligible, True, params["max_synapses"], params["seed"])
+    flat = gather(clouds, eligible, params["use_weights"], params["max_synapses"], params["seed"])
     options = {"version": split_cluster.VERSION, "dataset": dataset, "side": side,
                "source": file_fingerprint(clouds.path), "cell_ids": clouds.cell_ids[eligible].tolist(),
                "full_params": params, "points_per_half": sizes, "outer_reps": int(outer_reps),
-               "inner_reps": params["n_reps"], "seed": params["seed"], "align": params["align"],
+               "inner_reps": params["n_reps"], "seed": params["seed"],
                "use_weights": params["use_weights"], "linkage": params["linkage"],
                "min_cluster_size": params["min_cluster_size"], "k": params["k"],
                "k_values": list(range(params["k_min"], params["k_max"] + 1))}
@@ -219,7 +218,7 @@ def _report_eligible(clouds, side, min_synapses, n_neurons, seed, min_border_um,
     n_border = n_enough - eligible_neurons(clouds, min_synapses, min_border_um).size
     print(f"[{side}] {n_enough} / {len(clouds)} neurons have >= {min_synapses} synapses, "
           f"{n_border} of them within {min_border_um:g} um of the border; using {eligible.size}; "
-          f"{what}; aligned {clouds.align}; {n_jobs} CPUs")
+          f"{what}; {n_jobs} CPUs")
     return eligible
 
 
@@ -228,8 +227,7 @@ def compute_exact_distances(clouds, dataset, trial, side, *, min_synapses, use_w
     """Stage B (``--method points``): the exact W2 matrix of the complete clouds, ``exact.npz``.
 
     Every synapse enters with its border weight as mass; nothing is resampled
-    (``distances.py``). Also reports, on 100 random pairs, how much smaller the
-    W2 would be at the best in-plane rotation (``alignment_check``).
+    (``distances.py``).
     """
     start = time.time()
     n_jobs = allocated_cpus()
@@ -241,20 +239,11 @@ def compute_exact_distances(clouds, dataset, trial, side, *, min_synapses, use_w
     print(f"synapses per cloud: median {np.median(sizes):.0f}, max {sizes.max()}; "
           f"{eligible.size * (eligible.size - 1) // 2} pairs")
     result = exact_distances(flat, n_jobs)
-    if eligible.size >= 2:
-        pairs, given, best = alignment_check(flat, np.random.default_rng([seed, 99]), n_jobs=n_jobs)
-        if pairs.size:
-            ratio = given / np.maximum(best, 1e-9)
-            print(f"alignment check ({pairs.shape[0]} pairs): W2 / W2 at best rotation: "
-                  f"median {np.median(ratio):.3f}, 90th percentile {np.percentile(ratio, 90):.3f}")
-            result.update(alignment_check_pairs=eligible[pairs], alignment_check_w2=given,
-                          alignment_check_rotation_min_w2=best)
     path = distance_dir(dataset, trial, side) / "exact.npz"
     np.savez_compressed(path, eligible=eligible, cell_ids=clouds.cell_ids[eligible], method="points",
                         source_sha256=_source_sha256(clouds),
                         max_synapses=max_synapses or 0, n_synapses=sizes, min_synapses=min_synapses,
-                        min_border_um=min_border_um, aligned=clouds.align, use_weights=use_weights,
-                        **result)
+                        min_border_um=min_border_um, use_weights=use_weights, **result)
     upper = result["distance"][np.triu_indices(eligible.size, 1)]
     print(f"median pairwise distance {np.median(upper):.2f} um")
     print(f"Saved {path} ({time.time() - start:.0f}s)")
@@ -286,8 +275,7 @@ def compute_distances(clouds, dataset, trial, side, rep, *, min_synapses, use_we
     np.savez_compressed(path, eligible=eligible, cell_ids=clouds.cell_ids[eligible],
                         source_sha256=_source_sha256(clouds),
                         method=method, max_synapses=max_synapses or 0, min_synapses=min_synapses,
-                        min_border_um=min_border_um, aligned=clouds.align,
-                        use_weights=use_weights, **result)
+                        min_border_um=min_border_um, use_weights=use_weights, **result)
     upper = result["distance"][np.triu_indices(eligible.size, 1)]
     print(f"median self-distance {np.median(result['self_distance']):.2f} um; "
           f"median pairwise distance {np.median(upper):.2f} um")
@@ -413,7 +401,7 @@ def query_set(dataset, side, query, clouds, reference, min_synapses, min_border_
     path = clouds_path(dataset, side, "all")
     if not path.exists():
         raise FileNotFoundError(f"{path} is missing; run the extract stage with --all-cells")
-    all_clouds = Clouds(path, align=clouds.align)
+    all_clouds = Clouds(path)
     eligible = eligible_neurons(all_clouds, min_synapses, min_border_um)
     known = np.isin(all_clouds.cell_ids[eligible], clouds.cell_ids[reference])
     return all_clouds, eligible[~known]
@@ -421,14 +409,14 @@ def query_set(dataset, side, query, clouds, reference, min_synapses, min_border_
 
 def assign_neurons(dataset, trial, side, *, query, min_synapses, use_weights, seed, n_neighbours,
                    template_k_max, template_points, cv_folds, reject_quantile, min_border_um=0.0,
-                   align=False, k=None, run_info=None, max_synapses=None):
+                   k=None, run_info=None, max_synapses=None):
     """Stage D: calibrate both assignment methods on the clustered neurons, then assign the queries.
 
-    ``min_border_um`` and ``align`` must match the Stage B/C run being assigned to.
+    ``min_border_um`` must match the Stage B/C run being assigned to.
     """
     start = time.time()
     n_jobs = allocated_cpus()
-    clouds = Clouds(clouds_path(dataset, side), align=align)
+    clouds = Clouds(clouds_path(dataset, side))
     reference, labels, k = load_reference(dataset, trial, side, clouds, k)
     n_clusters = int(labels.max())
     query_clouds, queries = query_set(dataset, side, query, clouds, reference, min_synapses,
@@ -484,7 +472,7 @@ def assign_neurons(dataset, trial, side, *, query, min_synapses, use_weights, se
         json.dump(assign.serialise_templates(templates, selection, labels), handle, indent=2)
     summary = {
         "run": {"dataset": dataset, "trial": trial, "side": side, "query": query,
-                "min_border_um": min_border_um, "aligned": align,
+                "min_border_um": min_border_um,
                 "max_synapses": max_synapses, "n_neighbours": n_neighbours,
                 "template_k_max": template_k_max, "template_points": template_points,
                 "cv_folds": cv_folds, **(run_info or {})},

@@ -37,8 +37,8 @@ significance tests for discrete cell types.
 - [docs/split_half.md](docs/split_half.md): disjoint halves, matched sample sizes,
   fixed-cohort comparisons, outputs and statistical limits.
 - [docs/split_cluster.md](docs/split_cluster.md): clustering validation through
-  `run_pipeline.py --stages validate`, independent half alignment, A-only selection,
-  resumable checkpoints and a dendrite pilot command.
+  `run_pipeline.py --stages validate`, A-only selection, resumable checkpoints and a
+  dendrite pilot command.
 
 ## Running (on klone, inside a Slurm allocation)
 
@@ -57,7 +57,7 @@ $PYTHON -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --stages distan
 $PYTHON -u scripts/run_pipeline.py --sides dendrite --n-neurons 500 --max-synapses 2000 --n-reps 5 --stages distances cluster assign --query rest   # dendrites, then Stage D
 $PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --starts 3           # per-neuron GMMs
 $PYTHON -u scripts/analyze_split_half.py --sides axon --n-neurons 200 --points-per-half 100 200 --n-reps 100 --between-pairs 1000  # split-half diagnostics
-$PYTHON -u scripts/run_pipeline.py --sides dendrite --stages validate --n-neurons 100 --min-synapses 400 --validation-points-per-half 200 --validation-reps 10 --n-reps 5 --align  # clustering validation
+$PYTHON -u scripts/run_pipeline.py --sides dendrite --stages validate --n-neurons 100 --min-synapses 400 --validation-points-per-half 200 --validation-reps 10 --n-reps 5  # clustering validation
 ```
 
 Every trial is named after its Stage B and C parameters, so runs with different settings

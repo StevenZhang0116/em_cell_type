@@ -74,24 +74,20 @@ def allocated_cpus():
 
 def trial_name(*, n_neurons, n_reps, min_synapses, use_weights, seed,
                linkage, k_min, k_max, min_cluster_size, k=None, max_synapses=None,
-               method="points", shared_k=30, shared_alpha=10.0, align=False, min_border=0.0):
+               method="points", shared_k=30, shared_alpha=10.0, min_border=0.0):
     """Readable folder name that encodes every Stage B and C parameter.
 
     The third token says how neurons are compared: ``full`` for the exact W2
     between the complete synapse clouds (``max<n>`` when clouds above n
     synapses are capped), ``shared<K>_a<alpha>`` for MW2 between mixing
-    weights over K shared components with Dirichlet strength alpha. ``aligned``
-    marks canonically rotated clouds, ``border<um>`` a minimum soma distance
-    from the volume border.
+    weights over K shared components with Dirichlet strength alpha.
+    ``border<um>`` marks a minimum soma distance from the volume border.
     """
     if method == "points":
         sampling = f"max{max_synapses}" if max_synapses else "full"
     else:
         sampling = f"shared{shared_k}_a{shared_alpha:g}"
-    parts = [f"n{n_neurons or 'all'}", f"rep{n_reps}", sampling]
-    if align:
-        parts.append("aligned")
-    parts.append(f"min{min_synapses}")
+    parts = [f"n{n_neurons or 'all'}", f"rep{n_reps}", sampling, f"min{min_synapses}"]
     if min_border:
         parts.append(f"border{min_border:g}")
     parts += ["weighted" if use_weights else "unweighted", f"seed{seed}", linkage,

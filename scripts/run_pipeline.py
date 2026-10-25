@@ -24,7 +24,7 @@ Example::
     python -u scripts/run_pipeline.py --n-neurons 1000 --max-synapses 3000   # cap the largest clouds
     python -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --stages assign --query rest
     python -u scripts/run_pipeline.py --n-neurons 1000 --method shared --stages distances cluster
-    python -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --align --min-border-distance 50
+    python -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --min-border-distance 50
     python -u scripts/run_pipeline.py --sides dendrite --stages validate --min-synapses 400 --n-neurons 100 --validation-points-per-half 200 --validation-reps 10 --n-reps 5
 """
 
@@ -88,10 +88,6 @@ def main(argv=None):
     parser.add_argument("--min-border-distance", type=float, default=0.0,
                         help="exclude neurons whose soma is closer than this (um) to the volume "
                              "border, whose arbors are truncated (default 0: keep all)")
-    parser.add_argument("--align", action="store_true",
-                        help="rotate every cloud about the soma's vertical axis into a canonical "
-                             "orientation first, so the arbitrary in-plane direction of an arbor "
-                             "does not enter the distance")
     parser.add_argument("--n-neurons", type=int, default=None,
                         help="cluster only this many randomly chosen neurons per side "
                              "(default: all); the rest can be assigned in Stage D")
@@ -161,8 +157,7 @@ def main(argv=None):
 
     params = {"method": args.method, "n_neurons": args.n_neurons, "n_reps": args.n_reps,
               "max_synapses": args.max_synapses, "shared_k": args.shared_k,
-              "shared_alpha": args.shared_alpha,
-              "align": args.align, "min_synapses": args.min_synapses,
+              "shared_alpha": args.shared_alpha, "min_synapses": args.min_synapses,
               "min_border": args.min_border_distance, "use_weights": not args.no_weights,
               "seed": args.seed, "linkage": args.linkage, "k_min": args.k_min,
               "k_max": args.k_max, "min_cluster_size": args.min_cluster_size, "k": args.k}
@@ -180,7 +175,7 @@ def main(argv=None):
                 args.dataset, trial, side, points_per_half=args.validation_points_per_half,
                 outer_reps=args.validation_reps, params=params, overwrite=args.overwrite)
         if "distances" in args.stages:
-            clouds = Clouds(clouds_path(args.dataset, side), align=args.align)
+            clouds = Clouds(clouds_path(args.dataset, side))
             shared_model = None
             if args.method == "shared":
                 print(f"== Stage B: {side} | shared mixture")
@@ -236,8 +231,7 @@ def main(argv=None):
                     n_neighbours=args.knn, template_k_max=args.template_k_max,
                     template_points=args.template_points, cv_folds=args.cv_folds,
                     reject_quantile=args.reject_quantile,
-                    min_border_um=args.min_border_distance, align=args.align, k=args.k,
-                    run_info=params)
+                    min_border_um=args.min_border_distance, k=args.k, run_info=params)
         print(f"   elapsed {(time.time() - start) / 3600:.2f} h")
 
     print(f"All done in {(time.time() - start) / 3600:.2f} h")

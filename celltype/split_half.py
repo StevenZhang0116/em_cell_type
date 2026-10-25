@@ -9,7 +9,6 @@ cohort and pairs are used at every m and in every repetition.
 This is a conditional sampling-variability baseline, not a calibrated null
 test for equal distributions or discrete cell types. Repetitions reuse the
 observed synapses; their percentiles are split ranges, not confidence intervals.
-With Clouds(align=True), both halves inherit the full cloud's fixed rotation.
 """
 
 from __future__ import annotations
@@ -72,7 +71,7 @@ def _half(flat, cell_ids, row, m, *, seed, rep):
 
 
 def split_clouds(flat, cell_ids, m, *, seed, rep):
-    """Split already aligned clouds uniformly; original weights enter only as OT masses."""
+    """Split every cloud uniformly; the original weights enter only as OT masses."""
     halves = [_half(flat, cell_ids, row, m, seed=seed, rep=rep) for row in range(len(flat))]
     return (FlatClouds.from_list([h[0] for h in halves], [h[1] for h in halves]),
             FlatClouds.from_list([h[2] for h in halves], [h[3] for h in halves]))
@@ -223,5 +222,4 @@ def summary(result):
             "n_reps": int(result["self_distance"].shape[1]), "per_m": levels,
             "interpretation": "Conditional split variability, not a null test for cell types. "
                               "p05/p95 are repeated-split percentiles, not confidence intervals. "
-                              "Repetitions and pairs are not independent biological replicates.",
-            "alignment": "If enabled, both halves use the rotation estimated from the complete cloud."}
+                              "Repetitions and pairs are not independent biological replicates."}

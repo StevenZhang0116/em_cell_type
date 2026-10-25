@@ -33,14 +33,6 @@ overwrite each other.
   a little more than n^2 time, see "Cost" below. The trial token is `full`, or `maxN` with a cap.
 - `--n-neurons K` clusters only K randomly chosen neurons per side (same K neurons in every
   replicate); the remaining proofread neurons can be assigned in Stage D (`--query rest`).
-- `--align` rotates every cloud about the soma's vertical axis into a canonical frame before
-  anything else (principal axis of the weighted lateral second moment about the soma on +x,
-  lateral centroid on the positive side). Without it, two neurons of the same type whose
-  arbors point in different horizontal directions are far apart in W2; with it only the
-  anisotropy of the arbor counts. The exact-distance step of the points method prints an
-  "alignment check": the median ratio of W2 to the smallest W2 over 36 in-plane rotations on
-  100 random pairs (stored in `exact.npz`). Far above 1 without `--align` means orientation dominates
-  the distance; near 1 with `--align` means the canonical frame recovers the rotation optimum.
 - `--min-border-distance` (um, default 0) excludes neurons whose soma is closer than this to
   the volume border; their arbors are truncated and form spurious clusters. Median soma
   distance to the border is about 170 to 200 um, so useful values are 50 to 100 um. The filter
@@ -111,10 +103,9 @@ costs about a third of the exact matrix per pair. The median proofread axon has 
 Rough totals on 10 CPUs for the exact matrix plus 10 replicates: 1000 axons about 10 h, all
 1.7k axons about 30 h; 1000 dendrites about 140 h, or about 35 h with `--max-synapses 2000
 --n-reps 5`, and 500 dendrites with that cap about 9 h. So cluster the dendrite side on a
-few hundred neurons or with the cap and assign the rest in Stage D. The alignment check (100
-pairs at 36 rotations) and the Stage D distances (one pair per query and reference) cost the
-same per pair. Stage A needs about 96 GB of memory, Stages B to D a few GB plus the cost
-matrices of the pairs in flight.
+few hundred neurons or with the cap and assign the rest in Stage D. The Stage D distances (one
+pair per query and reference) cost the same per pair. Stage A needs about 96 GB of memory,
+Stages B to D a few GB plus the cost matrices of the pairs in flight.
 
 ## Stage C outputs (`trials/<trial>/cluster_<side>/`)
 

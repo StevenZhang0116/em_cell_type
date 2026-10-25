@@ -180,7 +180,7 @@ def test_pipeline_stages_b_and_c_end_to_end(tmp_path, monkeypatch):
         assert json.load(handle)["distance_matrix"] == "exact"
     with np.load(config.distance_dir("toy", "t", "axon") / "exact.npz") as data:
         exact = data["distance"]
-        assert list(data["n_synapses"]) == [150] * 9 and data["alignment_check_pairs"].shape[1] == 2
+        assert list(data["n_synapses"]) == [150] * 9
     assert np.allclose(np.load(outdir / "distance.npy"), exact)
     # Bootstrap noise floor (about 10 um on 150-point clouds) far below the group separation.
     assert (table["self_distance_um"] > 0).all() and (table["self_distance_um"] < 30).all()
@@ -270,13 +270,13 @@ def test_trial_name_encodes_every_parameter():
     assert config.trial_name(**base, method="shared", shared_k=30, shared_alpha=10.0) \
         == "n10_rep2_shared30_a10_min100_weighted_seed1_average_k2-3_mcs5"
     assert config.trial_name(**{**base, "n_neurons": None}).startswith("nall_")
-    assert config.trial_name(**base, align=True, min_border=50.0) \
-        == "n10_rep2_full_aligned_min100_border50_weighted_seed1_average_k2-3_mcs5"
+    assert config.trial_name(**base, min_border=50.0) \
+        == "n10_rep2_full_min100_border50_weighted_seed1_average_k2-3_mcs5"
     names = {config.trial_name(**{**base, key: value}) for key, value in
              [("n_reps", 3), ("max_synapses", 1000), ("min_synapses", 50), ("use_weights", False),
               ("seed", 2), ("linkage", "complete"), ("k_max", 5), ("min_cluster_size", 2),
-              ("method", "shared"), ("align", True), ("min_border", 50.0)]}
-    assert len(names) == 11 and config.trial_name(**base) not in names
+              ("method", "shared"), ("min_border", 50.0)]}
+    assert len(names) == 10 and config.trial_name(**base) not in names
 
 
 def test_border_filter_uses_um_against_stored_nm(tmp_path):
@@ -294,32 +294,6 @@ def test_border_filter_uses_um_against_stored_nm(tmp_path):
              dx=np.zeros(n), dy=np.zeros(n), dz=np.zeros(n), weight=np.ones(n), soma_y=np.zeros(1))
     with pytest.raises(ValueError):
         pipeline.eligible_neurons(Clouds(tmp_path / "no_border.npz"), 100, min_border_um=50)
-
-
-def test_aligned_clouds_ignore_in_plane_rotation(tmp_path):
-    """Neuron 2 is neuron 1 rotated by 90 degrees about the soma's vertical axis."""
-    rng = np.random.default_rng(5)
-    n = 300
-    dx, dy, dz = rng.normal(80, 20, n), rng.normal(0, 30, n), rng.normal(0, 20, n)
-    np.savez(tmp_path / "clouds.npz", cell_ids=np.array([1, 2]), offsets=np.array([0, n, 2 * n]),
-             dx=np.concatenate([dx, -dz]), dy=np.concatenate([dy, dy]),
-             dz=np.concatenate([dz, dx]), weight=np.ones(2 * n), soma_y=np.zeros(2))
-    plain = Clouds(tmp_path / "clouds.npz")
-    aligned = Clouds(tmp_path / "clouds.npz", align=True)
-
-    assert distances.w2_points(plain.neuron_points(0), plain.neuron_points(1)) > 50.0
-    assert distances.w2_points(aligned.neuron_points(0), aligned.neuron_points(1)) \
-        == pytest.approx(0.0, abs=1e-6)
-    # Canonical frame: the arbor lies on the +x side; depth is untouched.
-    assert aligned.neuron_points(1)[:, 0].mean() > 50.0
-    assert np.allclose(aligned.neuron_points(1)[:, 1], plain.neuron_points(1)[:, 1])
-    # The rotation search finds the same minimum from the unaligned clouds.
-    uniform = np.ones(n)
-    assert distances.rotation_min_w2(plain.neuron_points(0), uniform, plain.neuron_points(1), uniform,
-                                     n_angles=4) == pytest.approx(0.0, abs=1e-6)
-    pairs, given, best = distances.alignment_check(distances.gather(plain, [0, 1]),
-                                                   np.random.default_rng(0), n_pairs=6, n_angles=4)
-    assert pairs.shape[1] == 2 and np.all(best <= given + 1e-9)
 
 
 # ---------------------------------------------------------------------------

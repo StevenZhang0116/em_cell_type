@@ -17,7 +17,7 @@ selection is additionally rerun N times per neuron and the final models
 compared the same way (N times the fitting time).
 
 Neurons are selected exactly like a pipeline trial (same --n-neurons,
---min-synapses, --min-border-distance, --seed, --align), so the outputs join
+--min-synapses, --min-border-distance, --seed), so the outputs join
 the trial's cluster tables on pt_root_id. This is test code, so the outputs
 are flat files in gmm_output/ with the side as prefix, and every run
 overwrites the previous one (the options and command are in the summary):
@@ -97,8 +97,6 @@ def main():
     parser.add_argument("--min-synapses", type=int, default=100)
     parser.add_argument("--min-border-distance", type=float, default=0.0,
                         help="exclude neurons whose soma is closer than this (um) to the volume border")
-    parser.add_argument("--align", action="store_true",
-                        help="canonically rotate every cloud first (as --align in run_pipeline.py)")
     parser.add_argument("--no-weights", action="store_true", help="ignore border-compensation weights")
     parser.add_argument("--seed", type=int, default=20261019)
     # Fit options (see celltype/neuron_gmm.py)
@@ -151,7 +149,7 @@ def main():
             sys.exit(f"{path} not found: extract the clouds first with "
                      f"'scripts/run_pipeline.py --dataset {args.dataset} --stages extract' "
                      "(Stage A, about 96 GB of memory for microns)")
-        clouds = Clouds(path, align=args.align)
+        clouds = Clouds(path)
         indices = pipeline.select_neurons(clouds, args.min_synapses, args.n_neurons, args.seed,
                                           args.min_border_distance)
         print(f"== {side}: fitting {indices.size} neurons, k in {k_values}, method {args.method}, "
@@ -163,7 +161,7 @@ def main():
         table.to_csv(outdir / f"{side}_neurons.csv", index=False)
         neuron_gmm.save_fits(outdir / f"{side}_models.json", fits, cell_ids,
                              {**options, "k_values": k_values, "use_weights": not args.no_weights,
-                              "align": args.align, "seed": args.seed})
+                              "seed": args.seed})
         neuron_gmm.save_stability(outdir / f"{side}_stability.json", fits, cell_ids)
         plotting.plot_gmm_selection(fits, outdir / f"{side}_selection.png")
 
@@ -178,7 +176,7 @@ def main():
             "side": side, "command": " ".join(sys.argv), "dataset": args.dataset,
             "options": options, "k_values": k_values, "seed": args.seed,
             "selection": {"n_neurons": args.n_neurons, "min_synapses": args.min_synapses,
-                          "min_border_distance": args.min_border_distance, "align": args.align,
+                          "min_border_distance": args.min_border_distance,
                           "use_weights": not args.no_weights},
             "n_neurons": int(indices.size), "n_fitted": int(len(fitted)), "n_failed": len(errors),
             "chosen_k_counts": {str(int(k)): int(n) for k, n in fitted["k"].value_counts().sort_index().items()},

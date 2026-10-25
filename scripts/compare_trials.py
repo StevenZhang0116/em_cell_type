@@ -3,8 +3,8 @@ Compare Two Clusterings
 =======================
 Side by side comparison of two Stage C runs on the same neurons: two trials
 with different Stage B settings (typically ``--method points`` vs ``--method
-shared``, or with and without ``--align``; same ``--n-neurons`` and ``--seed``
-give the same neurons). Prints, per side: correlation of the two distance
+shared``; same ``--n-neurons`` and ``--seed`` give the same neurons). Prints,
+per side: correlation of the two distance
 matrices (`distance.npy`), self/nearest-neighbour ratio, chosen k with its stability and PAC,
 AMI with cell_type, and the ARI between the two consensus labelings. Saves a
 scatter of the two distance matrices. Outputs are labelled by the trial-name

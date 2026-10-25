@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from celltype import clustering, config, pipeline, split_cluster
 from celltype.clouds import Clouds
 from celltype.distances import FlatClouds, bootstrap, gather, pairwise
-from celltype.split_half import split_clouds, split_indices
+from celltype.split_half import split_clouds
 from scripts import run_pipeline
 
 
@@ -37,7 +37,7 @@ def clouds(tmp_path, monkeypatch):
 
 def _params(**changes):
     params = dict(method="points", n_neurons=None, n_reps=2, max_synapses=None,
-                  shared_k=30, shared_alpha=10.0, align=True, min_synapses=40,
+                  shared_k=30, shared_alpha=10.0, min_synapses=40,
                   min_border=0.0, use_weights=True, seed=17, linkage="average",
                   k_min=2, k_max=3, min_cluster_size=2, k=None)
     return {**params, **changes}
@@ -81,28 +81,6 @@ def test_unreachable_k_is_explicit_and_fixed_k_can_extend_candidates():
     json.dumps(split_cluster.fit_record(numpy_candidates), allow_nan=False)
 
 
-def test_half_alignment_uses_only_half_points_and_preserves_weights(clouds):
-    a, b = _halves(clouds)
-    prepared = split_cluster.prepare_half(a, align=True, use_weights=True)
-    # Compare to Clouds' existing canonical rule applied to a file containing A only.
-    path = clouds.path.parent / "half_a.npz"
-    np.savez(path, cell_ids=clouds.cell_ids, offsets=a.offsets, dx=a.points[:, 0],
-             dy=a.points[:, 1], dz=a.points[:, 2], weight=a.mass)
-    expected = gather(Clouds(path, align=True), np.arange(len(clouds)))
-    np.testing.assert_allclose(prepared.points, expected.points)
-    np.testing.assert_allclose(prepared.mass, a.mass)
-    b.points[:] = 1e9  # no shared transform, no shared array mutation
-    again = split_cluster.prepare_half(a, align=True, use_weights=False)
-    np.testing.assert_allclose(again.points, prepared.points)
-    np.testing.assert_allclose(again.mass, np.repeat(1 / a.sizes, a.sizes))
-    raw = gather(clouds, np.arange(len(clouds)))
-    for i, cell_id in enumerate(clouds.cell_ids):
-        ia, ib = split_indices(raw.sizes[i], 12, seed=17, cell_id=int(cell_id), rep=0)
-        assert not set(ia) & set(ib)
-        weights = raw.cloud(i)[1][ia]
-        np.testing.assert_allclose(a.cloud(i)[1], weights / weights.sum())
-
-
 def test_a_selection_cannot_see_b_and_b_uses_frozen_k(clouds):
     a, b = _halves(clouds)
     first = _fit(a, b)
@@ -119,9 +97,8 @@ def test_a_selection_cannot_see_b_and_b_uses_frozen_k(clouds):
     assert first["record"]["metrics"]["delta_um"] > 50
 
 
-def test_inner_bootstrap_keeps_frame_fixed_and_matches_main_order(clouds, monkeypatch):
+def test_inner_bootstrap_matches_main_order(clouds, monkeypatch):
     a, _ = _halves(clouds)
-    a = split_cluster.prepare_half(a, align=True, use_weights=True)
     expected = np.stack([pairwise(bootstrap(a, np.random.default_rng([7, rep])), 1) for rep in range(2)])
     original = clustering.fit_consensus
     def inspect(matrices, *args, **kwargs):
@@ -203,7 +180,7 @@ def test_resume_partial_run_and_manifest_rejects_mismatch(clouds, monkeypatch):
 def test_cache_identity_binds_source_cohort_and_parameters(clouds):
     out = pipeline.validate_neurons("microns", "t", "dendrite", points_per_half=[8], outer_reps=1, params=_params())
     options = json.loads((out / "config.json").read_text())
-    for key, value in (("seed", 900), ("inner_reps", 4), ("align", False), ("k", 2),
+    for key, value in (("seed", 900), ("inner_reps", 4), ("use_weights", False), ("k", 2),
                        ("cell_ids", options["cell_ids"][:-1]), ("source", {"sha256": "changed"})):
         assert config.validation_dir("microns", "t", "dendrite", {**options, key: value}) != out
     fingerprint = config.file_fingerprint(clouds.path)
@@ -221,7 +198,7 @@ def test_validation_uses_main_selection_and_cap(clouds, monkeypatch):
     def inspect(flat, options, outdir, **kwargs):
         assert options["cell_ids"] == clouds.cell_ids[selected].tolist()
         assert options["points_per_half"] == [8, 12]
-        np.testing.assert_array_equal(flat.points, expected.points)  # unaligned until after splitting
+        np.testing.assert_array_equal(flat.points, expected.points)
         np.testing.assert_array_equal(flat.mass, expected.mass)
         assert (flat.sizes == 24).all()
     monkeypatch.setattr(split_cluster, "run", inspect)
@@ -261,7 +238,7 @@ def test_failed_fits_are_saved_and_plotted(clouds):
 def test_cli_validate_then_full_fit_and_reference(clouds):
     args = ["--dataset", "microns", "--sides", "dendrite", "--stages", "cluster", "validate", "distances",
             "--min-synapses", "40", "--n-reps", "2", "--k-max", "3", "--min-cluster-size", "2",
-            "--seed", "17", "--align", "--validation-points-per-half", "8", "12", "--validation-reps", "1"]
+            "--seed", "17", "--validation-points-per-half", "8", "12", "--validation-reps", "1"]
     run_pipeline.main(args)
     trial = config.trial_name(**_params())
     full = json.loads((config.cluster_dir("microns", trial, "dendrite") / "summary.json").read_text())
