@@ -34,7 +34,7 @@ overwrites the previous one (the options and command are in the summary):
 
 Example::
 
-    python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 1000 --min-border-distance 100
+    python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 1000 --k-max 4 --k-step 1 --min-border-distance 100
     python -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --method diagonal_constraint
     python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 50 --k-min 2 --k-max 4 --k-step 1 --repeats 6
     python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 100 --reruns 5
@@ -107,7 +107,9 @@ def main():
                              "relative-coordinate cell-type fits, diagonal_constraint its cylindrical variant")
     parser.add_argument("--k-min", type=int, default=1,
                         help="smallest number of components tried (../mixture tries 2 to 4 for clouds "
-                             "under 10k synapses; the default 1-16 by 3 tries 1, 4, 7, 10, 13, 16)")
+                             "under 10k synapses; the default 1-16 by 3 tries 1, 4, 7, 10, 13, 16, which "
+                             "suits dendrites; axons with a few hundred synapses support only k up to "
+                             "2-4 at 20 synapses per parameter, so use --k-max 4 --k-step 1 for them)")
     parser.add_argument("--k-max", type=int, default=16)
     parser.add_argument("--k-step", type=int, default=3,
                         help="try every k-step-th value from --k-min to --k-max")

@@ -63,7 +63,7 @@ def allocated_cpus():
 # Synapses resampled per neuron per replicate by ``--method points``, per side.
 # This is the main cost knob: the exact W2 between two clouds of n points is an
 # n x n assignment problem whose time grows roughly with n^3 (about 4 ms per pair
-# per CPU at 200 points, see README). Dendrites have a median of 2400 synapses, axons 380.
+# per CPU at 200 points, see docs/pipeline.md). Dendrites have a median of 2400 synapses, axons 380.
 DEFAULT_N_POINTS = {"axon": 200, "dendrite": 2000}
 
 

@@ -70,7 +70,7 @@ def main():
                         help="[points] synapses resampled per neuron per replicate: one value for "
                              "every side, or one per side in the order axon, dendrite (default: "
                              + ", ".join(f"{s} {n}" for s, n in DEFAULT_N_POINTS.items())
-                             + "; the exact W2 per pair costs about n^3, see README)")
+                             + "; the exact W2 per pair costs about n^3, see docs/pipeline.md)")
     parser.add_argument("--shared-k", type=int, default=30,
                         help="[shared] components of the shared mixture")
     parser.add_argument("--shared-alpha", type=float, default=10.0,
