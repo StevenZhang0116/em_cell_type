@@ -19,6 +19,7 @@ Modules:
   pipeline    the stages (extract, distances, cluster; assign is optional)
   neuron_gmm  per-neuron Gaussian mixtures with the weighted GMM fitter imported from ../mixture,
               and their fitting stability (mixture Wasserstein distance between repeated fits)
+  split_half  disjoint, sample-matched self/between distances on a fixed neuron cohort
 
 Stages are in pipeline.py; the command-line entry point is ../scripts/run_pipeline.py.
 """

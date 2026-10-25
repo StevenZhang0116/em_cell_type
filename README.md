@@ -20,6 +20,10 @@ copied.
 
 Beside the pipeline, `scripts/fit_neuron_gmms.py` fits the weighted Gaussian mixture of
 `../mixture` to every neuron and measures how stable those fits are (`gmm_output/`).
+`scripts/analyze_split_half.py` measures within-neuron variability using disjoint
+synapse halves and compares it with sample-matched between-neuron distances on a
+fixed cohort (`output/<dataset>/split_half/`). These are sampling diagnostics, not
+significance tests for discrete cell types.
 
 ## Documentation
 
@@ -29,6 +33,8 @@ Beside the pipeline, `scripts/fit_neuron_gmms.py` fits the weighted Gaussian mix
   calibration, outputs.
 - [docs/neuron_gmm.md](docs/neuron_gmm.md): per-neuron GMMs, which k to try, fitting
   stability, outputs.
+- [docs/split_half.md](docs/split_half.md): disjoint halves, matched sample sizes,
+  fixed-cohort comparisons, outputs and statistical limits.
 
 ## Running (on klone, inside a Slurm allocation)
 
@@ -46,6 +52,7 @@ $PYTHON -u scripts/run_pipeline.py --sides axon                    # all proofre
 $PYTHON -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --stages distances cluster   # 1000 axons, about 10 h
 $PYTHON -u scripts/run_pipeline.py --sides dendrite --n-neurons 500 --max-synapses 2000 --n-reps 5 --stages distances cluster assign --query rest   # dendrites, then Stage D
 $PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --starts 3           # per-neuron GMMs
+$PYTHON -u scripts/analyze_split_half.py --sides axon --n-neurons 200 --points-per-half 100 200 --n-reps 100 --between-pairs 1000  # split-half diagnostics
 ```
 
 Every trial is named after its Stage B and C parameters, so runs with different settings
@@ -65,8 +72,9 @@ celltype/    library code (no command-line parsing)
   plotting.py    Stage-C, Stage-D and per-neuron GMM figures
   pipeline.py    the four stages (Stage D optional)
   neuron_gmm.py  per-neuron GMMs with the weighted fitter imported from ../mixture
-scripts/     run_pipeline.py (the pipeline entry point), compare_trials.py, fit_neuron_gmms.py
-docs/        pipeline.md, assignment.md, neuron_gmm.md
+  split_half.py  disjoint, sample-matched self/between W2 diagnostics
+scripts/     run_pipeline.py, compare_trials.py, fit_neuron_gmms.py, analyze_split_half.py
+docs/        pipeline.md, assignment.md, neuron_gmm.md, split_half.md
 tests/       pytest unit tests
 jobs/        env.sh (job environment: conda env, 1 BLAS thread) and the unit-test Slurm script
 output/      pipeline outputs per dataset (clouds, trials); ignored by git
