@@ -20,18 +20,16 @@ template  The synapses of each cluster's members are pooled (soma-centred)
           ``../mixture`` (``templates.py``). A query's score under cluster c
           is the weighted mean per-synapse log-density. The synapses of one
           neuron are not independent draws from its type's template, so the
-          score is tempered: ``posterior ∝ exp(T * score) * prior(depth)``,
-          where T plays the role of an effective number of independent
-          synapses. ``template`` uses no prior; ``template_prior`` multiplies
-          in P(cluster | soma depth) (per-cluster depth KDE times cluster
-          proportion). A query whose best score is below the
-          ``1 - reject_quantile`` quantile of held-out own-cluster scores
-          gets label 0.
+          score is tempered: ``posterior ∝ exp(T * score)``, where T plays
+          the role of an effective number of independent synapses. Soma depth
+          is not used: the posterior depends on the synapse cloud alone. A
+          query whose best score is below the ``1 - reject_quantile``
+          quantile of held-out own-cluster scores gets label 0.
 
 Calibration and validation come from the same cross-validation of the
 reference set: each fold is held out, the kNN pool is restricted to and the
-templates and depth prior are refitted on the other folds, and the held-out
-scores fix tau, T and the rejection thresholds by minimising the negative
+templates are refitted on the other folds, and the held-out scores fix tau,
+T and the rejection thresholds by minimising the negative
 log-likelihood of the consensus labels. The held-out posteriors also give
 the reported accuracy, calibration error, confusion matrices and the
 agreement between the methods.
@@ -43,13 +41,12 @@ import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 from scipy.special import logsumexp
-from scipy.stats import gaussian_kde, norm
 from sklearn.metrics import adjusted_mutual_info_score
 
 from .distances import pairwise_points, w2_points
 from .templates import fit_template
 
-METHODS = ("knn", "template", "template_prior")
+METHODS = ("knn", "template")
 
 
 # ---------------------------------------------------------------------------
@@ -175,32 +172,9 @@ def template_scores(clouds, indices, templates, use_weights):
     return scores
 
 
-class DepthPrior:
-    """log P(cluster | soma depth) = log(cluster proportion) + log KDE_c(depth) + const."""
-
-    def __init__(self, depths, labels, n_clusters):
-        depths = np.asarray(depths, dtype=float)
-        pooled = depths[labels > 0]
-        counts = np.array([np.sum(labels == c) for c in range(1, n_clusters + 1)], dtype=float)
-        self.log_proportion = np.log(counts / counts.sum() + 1e-12)
-        self.densities = [self._density(depths[labels == c], pooled) for c in range(1, n_clusters + 1)]
-
-    @staticmethod
-    def _density(values, pooled):
-        if values.size >= 3 and np.std(values) > 0:
-            return gaussian_kde(values)
-        mean = values.mean() if values.size else pooled.mean()
-        scale = np.std(pooled) + 1e-6
-        return lambda x: norm.pdf(x, mean, scale)
-
-    def log_prior(self, depths):
-        depths = np.asarray(depths, dtype=float)
-        return np.column_stack([np.log(density(depths) + 1e-300) for density in self.densities]) \
-            + self.log_proportion
-
-
-def softmax_posterior(scores, temperature, log_prior=None):
-    logits = temperature * scores + (0.0 if log_prior is None else log_prior)
+def softmax_posterior(scores, temperature):
+    """Tempered softmax over the per-cluster template scores."""
+    logits = temperature * scores
     return np.exp(logits - logsumexp(logits, axis=1, keepdims=True))
 
 
@@ -252,14 +226,12 @@ def stratified_folds(labels, n_folds, rng):
 
 def cross_validate(clouds, indices, labels, n_clusters, distances, *, n_folds, n_neighbours,
                    k_values, max_points, use_weights, seed, n_jobs=1):
-    """Held-out kNN neighbours, template scores and depth log-priors for every reference."""
+    """Held-out kNN neighbours and template scores for every reference."""
     n = len(indices)
     fold = stratified_folds(labels, n_folds, np.random.default_rng([seed, 5]))
     knn_distance = np.full((n, n_neighbours), np.nan)
     knn_label = np.zeros((n, n_neighbours), dtype=int)
     score = np.full((n, n_clusters), np.nan)
-    log_prior = np.full((n, n_clusters), np.nan)
-    depths = clouds.meta["soma_y"][indices]
     for f in range(n_folds):
         held = fold == f
         train = ~held & (labels > 0)
@@ -271,13 +243,11 @@ def cross_validate(clouds, indices, labels, n_clusters, distances, *, n_folds, n
                                      k_values=k_values, max_points=max_points,
                                      use_weights=use_weights, seed=seed + f, n_jobs=n_jobs)
         score[held] = template_scores(clouds, indices[held], templates, use_weights)
-        log_prior[held] = DepthPrior(depths[train], labels[train], n_clusters).log_prior(depths[held])
-    return {"fold": fold, "knn_distance": knn_distance, "knn_label": knn_label,
-            "score": score, "log_prior": log_prior}
+    return {"fold": fold, "knn_distance": knn_distance, "knn_label": knn_label, "score": score}
 
 
 def calibrate_from_cv(cv, labels, n_clusters, reject_quantile):
-    """tau, T (with and without the depth prior) and rejection thresholds from held-out references."""
+    """tau, T and the rejection thresholds from the held-out references."""
     keep = labels > 0
     truth = labels[keep]
     nearest = cv["knn_distance"][:, 0]
@@ -288,32 +258,26 @@ def calibrate_from_cv(cv, labels, n_clusters, reject_quantile):
     temperature_grid = np.logspace(0, 4, 41)
     temperature, temperature_curve = calibrate(
         lambda t: softmax_posterior(cv["score"][keep], t), temperature_grid, truth)
-    temperature_prior, temperature_prior_curve = calibrate(
-        lambda t: softmax_posterior(cv["score"][keep], t, cv["log_prior"][keep]),
-        temperature_grid, truth)
     own_score = cv["score"][keep][np.arange(truth.size), truth - 1]
     return {
-        "tau_um2": tau, "temperature": temperature, "temperature_with_prior": temperature_prior,
+        "tau_um2": tau, "temperature": temperature,
         "reject_distance_um": float(np.nanquantile(nearest[keep], reject_quantile)),
         "reject_score": float(np.quantile(own_score, 1 - reject_quantile)),
         "reject_quantile": reject_quantile,
-        "curves": {"tau_um2": tau_curve, "temperature": temperature_curve,
-                   "temperature_with_prior": temperature_prior_curve},
+        "curves": {"tau_um2": tau_curve, "temperature": temperature_curve},
     }
 
 
-def assignments(knn_distance, knn_label, score, log_prior, n_clusters, calibration):
+def assignments(knn_distance, knn_label, score, n_clusters, calibration):
     """Posteriors (Q, k) and hard labels (0 = rejected) for every method."""
     prob = {
         "knn": knn_posterior(knn_distance, knn_label, n_clusters, calibration["tau_um2"]),
         "template": softmax_posterior(score, calibration["temperature"]),
-        "template_prior": softmax_posterior(score, calibration["temperature_with_prior"], log_prior),
     }
     rejected = {
         "knn": ~(knn_distance[:, 0] <= calibration["reject_distance_um"]),
         "template": ~(score.max(axis=1) >= calibration["reject_score"]),
     }
-    rejected["template_prior"] = rejected["template"]
     hard = {m: np.where(rejected[m], 0, prob[m].argmax(axis=1) + 1) for m in METHODS}
     return prob, hard
 

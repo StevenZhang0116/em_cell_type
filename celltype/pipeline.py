@@ -319,14 +319,13 @@ def assign_neurons(dataset, trial, side, *, query, n_points, min_synapses, use_w
                                n_neighbours=n_neighbours, seed=seed, **templating)
     calibration = assign.calibrate_from_cv(cv, labels, n_clusters, reject_quantile)
     cv_prob, cv_hard = assign.assignments(cv["knn_distance"], cv["knn_label"], cv["score"],
-                                          cv["log_prior"], n_clusters, calibration)
+                                          n_clusters, calibration)
     cv_metrics = assign.evaluate(cv_prob, cv_hard, labels, n_clusters)
     print(f"cross-validation done ({time.time() - start:.0f}s)")
 
-    # 2. Final templates and depth prior from all reference neurons.
+    # 2. Final templates from all reference neurons.
     templates, selection = assign.fit_templates(clouds, reference, labels, n_clusters, seed=seed,
                                                 **templating)
-    prior = assign.DepthPrior(clouds.meta["soma_y"][reference], labels, n_clusters)
 
     # 3. Queries.
     outdir = assign_dir(dataset, trial, side, query)
@@ -336,9 +335,7 @@ def assign_neurons(dataset, trial, side, *, query, n_points, min_synapses, use_w
         q_distances = assign.query_reference_distances(query_clouds, queries, clouds, pool, **sampling)
         knn_distance, knn_label = assign.nearest_references(q_distances, labels[labels > 0], n_neighbours)
         score = assign.template_scores(query_clouds, queries, templates, use_weights)
-        log_prior = prior.log_prior(query_clouds.meta["soma_y"][queries])
-        q_prob, q_hard = assign.assignments(knn_distance, knn_label, score, log_prior, n_clusters,
-                                            calibration)
+        q_prob, q_hard = assign.assignments(knn_distance, knn_label, score, n_clusters, calibration)
         q_table = assign.assignment_table(clustering.neuron_table(query_clouds, queries), q_prob,
                                           q_hard, knn_distance, score, n_clusters)
         q_table.to_csv(outdir / "queries.csv", index=False)
@@ -381,8 +378,7 @@ def assign_neurons(dataset, trial, side, *, query, n_points, min_synapses, use_w
                       ("accuracy", "nll", "ece", "rejected_fraction", "outliers_rejected_fraction")}
              for method in assign.METHODS}
     print(json.dumps({"calibration": {key: calibration[key] for key in
-                                      ("tau_um2", "temperature", "temperature_with_prior",
-                                       "reject_distance_um", "reject_score")},
+                                      ("tau_um2", "temperature", "reject_distance_um", "reject_score")},
                       "cross_validation": brief, "agreement": cv_metrics["agreement"],
                       "queries": queries_summary}, indent=2))
     print(f"Outputs in {outdir} ({time.time() - start:.0f}s)")

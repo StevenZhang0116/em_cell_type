@@ -15,6 +15,9 @@ Input tables are the ones used by the Stage-1 GMM fit in
 
 ``<trial>`` is built from the Stage B and C parameters (``trial_name``), so
 runs with different parameters never share or overwrite each other's files.
+
+The per-neuron GMM analysis (scripts/fit_neuron_gmms.py, test code) writes
+flat files gmm_output/<side>_*.{csv,json,png}; every run overwrites the last.
 """
 
 from __future__ import annotations
@@ -27,6 +30,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MIXTURE_ROOT = PROJECT_ROOT.parent / "mixture"
 DATA_DIR = MIXTURE_ROOT / "microns_v1dd" / "sven"
 OUTPUT_ROOT = PROJECT_ROOT / "output"
+GMM_OUTPUT_ROOT = PROJECT_ROOT / "gmm_output"       # per-neuron GMM analysis, apart from the pipeline
 
 NM_TO_UM = 1.0 / 1000.0
 SIDES = ("axon", "dendrite")
@@ -138,3 +142,8 @@ def cluster_dir(dataset, trial, side):
 
 def assign_dir(dataset, trial, side, query):
     return _ensure(trial_dir(dataset, trial) / f"assign_{side}_{query}")
+
+
+def gmm_dir():
+    """The flat folder of the per-neuron GMM analysis (``celltype/neuron_gmm.py``); runs overwrite each other."""
+    return _ensure(GMM_OUTPUT_ROOT)

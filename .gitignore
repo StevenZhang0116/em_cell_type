@@ -1,3 +1,4 @@
 output/
+gmm_output/
 log/
 __pycache__/

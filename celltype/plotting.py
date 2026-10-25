@@ -14,6 +14,10 @@ Stage D figures:
   cv_reliability reliability diagram (accuracy vs posterior confidence) per method
   templates      each cluster's template density (slice through its centre) over member synapses
   queries        posterior confidence and label counts of the assigned queries
+
+Per-neuron GMM figures (celltype/neuron_gmm.py):
+  gmm_selection  chosen-k counts and the held-out BIC curve (relative to each neuron's best k)
+  gmm_stability  within-neuron vs between-neuron mixture Wasserstein distances, vs synapse count and k
 """
 
 from __future__ import annotations
@@ -264,6 +268,94 @@ def plot_templates(templates, clouds, indices, labels, path, slab=30.0, max_poin
     axes = np.atleast_1d(axes)
     axes[0].set_ylabel("depth offset dy (um)")
     axes[0].invert_yaxis()
+    fig.tight_layout()
+    _save(fig, path)
+
+
+def plot_gmm_selection(fits, path):
+    """Chosen k per neuron and, per candidate k, the mean held-out BIC minus the neuron's lowest.
+
+    ``fits`` are ``NeuronGMM`` objects (None entries skipped). The right panel
+    shows the median and interquartile range over neurons; a flat curve means
+    the extra components buy little held-out evidence.
+    """
+    fits = [fit for fit in fits if fit is not None]
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    chosen = np.array([fit.k for fit in fits])
+    values = np.arange(chosen.min(), chosen.max() + 1) if chosen.size else np.arange(1)
+    axes[0].bar(values, [int(np.sum(chosen == v)) for v in values], color="0.4")
+    axes[0].set_xticks(values)
+    axes[0].set_xlabel("chosen number of components")
+    axes[0].set_ylabel("neurons")
+
+    relative = {}
+    for fit in fits:
+        mean_bic = np.nanmean(np.asarray(fit.selection["test_bic"]), axis=1)
+        if np.all(np.isnan(mean_bic)):
+            continue
+        for k, value in zip(fit.selection["candidates"], mean_bic - np.nanmin(mean_bic)):
+            relative.setdefault(k, []).append(value)
+    ks = sorted(relative)
+    if ks:
+        low, mid, high = (np.array([np.nanpercentile(relative[k], q) for k in ks]) for q in (25, 50, 75))
+        axes[1].plot(ks, mid, marker="o", color="k")
+        axes[1].fill_between(ks, low, high, alpha=0.25, color="0.5")
+        axes[1].set_xticks(ks)
+    axes[1].set_xlabel("number of components")
+    axes[1].set_ylabel("held-out BIC minus the neuron's lowest")
+    axes[1].set_title("median and IQR over neurons", fontsize=9)
+    fig.tight_layout()
+    _save(fig, path)
+
+
+def plot_gmm_stability(fits, between, path):
+    """Fitting stability of the per-neuron mixtures.
+
+    Left: per neuron, the median mixture Wasserstein distance between its repeat
+    fits (and, when reruns were made, between the reruns' final models) against
+    the distance between the final models of random pairs of neurons
+    (``between``, a sequence of distances). Middle: the within-neuron distance
+    against the number of synapses in the fit. Right: the within-neuron distance
+    at every candidate k (median and IQR over neurons).
+    """
+    fits = [fit for fit in fits if fit is not None and fit.stability]
+    within = np.array([fit.stability["within_median"] for fit in fits], dtype=float)
+    rerun = np.array([fit.stability["rerun"]["within_median"] for fit in fits if fit.stability["rerun"]],
+                     dtype=float)
+    between = np.asarray(between, dtype=float)
+    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    series = [(within, "within neuron: repeat fits"), (rerun, "within neuron: reruns"),
+              (between, "between neurons")]
+    finite = [values[np.isfinite(values)] for values, _ in series]
+    top = max((values.max() for values in finite if values.size), default=1.0)
+    bins = np.linspace(0, top, 31)
+    for values, (_, label) in zip(finite, series):
+        if values.size:
+            axes[0].hist(values, bins=bins, histtype="step", density=True, label=label)
+    axes[0].set_xlabel("mixture Wasserstein distance (um)")
+    axes[0].set_ylabel("density")
+    axes[0].legend(fontsize=8)
+
+    n_synapses = np.array([fit.n_synapses for fit in fits])
+    axes[1].scatter(n_synapses, within, s=8, alpha=0.4, color="k")
+    axes[1].set_xscale("log")
+    axes[1].set_xlabel("synapses in the fit")
+    axes[1].set_ylabel("within-neuron median distance (um)")
+
+    per_k = {}
+    for fit in fits:
+        for k, record in fit.stability["per_k"].items():
+            if np.isfinite(record["within_median"]):
+                per_k.setdefault(int(k), []).append(record["within_median"])
+    ks = sorted(per_k)
+    if ks:
+        low, mid, high = (np.array([np.percentile(per_k[k], q) for k in ks]) for q in (25, 50, 75))
+        axes[2].plot(ks, mid, marker="o", color="k")
+        axes[2].fill_between(ks, low, high, alpha=0.25, color="0.5")
+        axes[2].set_xticks(ks)
+    axes[2].set_xlabel("number of components")
+    axes[2].set_ylabel("within-neuron median distance (um)")
+    axes[2].set_title("median and IQR over neurons", fontsize=9)
     fig.tight_layout()
     _save(fig, path)
 

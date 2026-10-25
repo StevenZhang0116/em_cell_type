@@ -95,37 +95,36 @@ posterior over the k major clusters plus a "none" label 0:
 - **knn**: the query is resampled like a Stage-B replicate, its W2 distance to every
   clustered non-outlier neuron is averaged over `--assign-reps` resamples, and the
   `--knn` nearest references vote with weight `exp(-d^2 / tau)`.
-- **template** / **template_prior**: each cluster's synapses are pooled (soma-centred) and
-  fitted with the cylindrically constrained weighted GMM of `../mixture`
-  (`celltype/templates.py`: diagonal covariances, one shared lateral centre, isotropic
-  lateral variance, K by weighted BIC up to `--template-k-max`). The query's score under a
-  cluster is its weighted mean per-synapse log-density. Because the synapses of one neuron
-  are not independent draws from its type's template, the posterior is tempered,
-  `exp(T * score)`, with T acting as an effective number of independent synapses;
-  `template_prior` also multiplies in P(cluster | soma depth) (per-cluster depth KDE times
-  cluster proportion). Note that the template is rotationally symmetric about its centre
-  while the W2 distance is not, so clusters that differ only in the in-plane direction of
-  their arbors are seen by knn but not by the templates; the held-out agreement between
-  the methods shows whether this matters.
+- **template**: each cluster's synapses are pooled (soma-centred) and fitted with the
+  cylindrically constrained weighted GMM of `../mixture` (`celltype/templates.py`: diagonal
+  covariances, one shared lateral centre, isotropic lateral variance, K by weighted BIC up
+  to `--template-k-max`). The query's score under a cluster is its weighted mean per-synapse
+  log-density. Because the synapses of one neuron are not independent draws from its type's
+  template, the posterior is tempered, `exp(T * score)`, with T acting as an effective
+  number of independent synapses. Note that the template is rotationally symmetric about
+  its centre while the W2 distance is not, so clusters that differ only in the in-plane
+  direction of their arbors are seen by knn but not by the templates; the held-out
+  agreement between the methods shows whether this matters.
+
+Neither method uses the soma depth: like the clustering, the assignment depends on the
+synapse cloud alone.
 
 `tau`, `T` and the rejection thresholds (`--reject-quantile`, default 0.95, of the held-out
 nearest-reference distance and of the held-out own-cluster score) are chosen by minimising
 the held-out negative log-likelihood of the consensus labels in a `--cv-folds` cross-
-validation of the clustered neurons (kNN pool, templates and depth prior refitted without
-the held-out fold). The same held-out posteriors give the reported accuracy, calibration
-error and confusion matrices, and the agreement between the methods.
+validation of the clustered neurons (kNN pool and templates refitted without the held-out
+fold). The same held-out posteriors give the reported accuracy, calibration error and
+confusion matrices, and the agreement between the methods.
 
 Caveats: axon and dendrite clusters are separate taxonomies, so a neuron gets one label
-per side and the two must not be multiplied; a dendrite-only neuron has no axon label. The
-proofread set is not a random sample, so the depth prior's cluster proportions may not
-match the whole population; compare `template` with `template_prior`. Non-proofread
-dendrites (`--query all`) may be truncated or merged.
+per side and the two must not be multiplied; a dendrite-only neuron has no axon label.
+Non-proofread dendrites (`--query all`) may be truncated or merged.
 
 ### Stage D outputs (`trials/<trial>/assign_<side>_<query>/`)
 
 | File | Content |
 |---|---|
-| `summary.json` | k, reference/query counts, calibration (`tau_um2`, `temperature`, `temperature_with_prior`, rejection thresholds, NLL curves), held-out metrics per method (accuracy, NLL, ECE, confusion, rejected fractions), method agreement, template sizes and BIC per K, query label counts and AMI with `cell_type` |
+| `summary.json` | k, reference/query counts, calibration (`tau_um2`, `temperature`, rejection thresholds, NLL curves), held-out metrics per method (accuracy, NLL, ECE, confusion, rejected fractions), method agreement, template sizes and BIC per K, query label counts and AMI with `cell_type` |
 | `reference_cv.csv` | per clustered neuron: consensus label, fold, held-out nearest-reference distance, template scores, posteriors and hard labels of every method |
 | `queries.csv` | the same for every query neuron, with its covariates and dataset labels |
 | `templates.json` | the fitted template of every cluster |
@@ -144,6 +143,79 @@ dendrites (`--query all`) may be truncated or merged.
 | `tree_heatmap.png` | dendrogram of the mean distance matrix with cell_type and cluster barcodes |
 | `noise_floor.png`, `contingency.png`, `covariates.png` | self vs nearest-neighbour distance, cell_type x cluster counts, covariates per cluster |
 
+## Per-neuron GMMs with the ../mixture fitter
+
+`scripts/fit_neuron_gmms.py` is an analysis beside the pipeline. It fits the weighted Gaussian
+mixture class of `../mixture` (`src/scratch_models/gmm_scratch.py`, `GMMWeighted`; imported,
+not copied) to the soma-centred synapse cloud of every selected neuron, following the recipe
+of the Stage-1 cell-type model in `../mixture/src/modeling/mixture_all.py`: axes ordered
+(dx, dz, dy), synapses weighted by the border weight, at most `--max-synapses` synapses per
+repetition, a train/test split per repetition, every candidate k fitted on the training
+synapses and scored by the weighted BIC on the test synapses, and k chosen by
+`mix_helper.best_number_component`: the smallest k whose test BICs are not significantly
+different (paired Wilcoxon test) from those of the k with the lowest mean BIC. That test cannot
+reject with fewer than 6 repetitions, so `--repeats` must be at least 6 (`../mixture` uses 20
+or 50; default 20). Candidates are limited to k with at least `--min-synapses-per-parameter`
+(20) synapses per free parameter, as in `../mixture`, so an axon with 380 synapses is usually
+fitted with 2 or 3 diagonal components. The default range is `--k-min 1 --k-max 16 --k-step 3`
+(1, 4, 7, 10, 13, 16; a dendrite with 2400 synapses supports up to about 17 diagonal components,
+and `--k-step` keeps the cost of a wide range down); `--k-min 2 --k-max 4 --k-step 1` is what
+`../mixture` tries for clouds under 10k synapses. `--method` picks the covariance: `diagonal`
+(what `../mixture` uses for its relative-coordinate fits), `diagonal_constraint` (its
+cylindrical variant: one lateral centre shared by all components, one lateral variance per
+component) or `normal` (full covariances). Neurons are selected like a pipeline trial
+(`--n-neurons`, `--min-synapses`, `--min-border-distance`, `--seed`, `--align`), so
+`<side>_neurons.csv` joins a trial's `neurons.csv` on `pt_root_id`.
+
+**Fitting stability.** A cell-type model in `../mixture` pools thousands of synapses; a single
+neuron has a few hundred, so every neuron's fit is also checked for stability. The models fitted
+at the chosen k during k selection (one per repetition, each on its own 80% training subsample
+and EM start, so `--repeats` of them) are compared with the mixture Wasserstein distance of
+`../mixture` (`distributions_handler.component_ot_distance`, imported: optimal transport between
+the Gaussian components with the squared Gaussian W2 as cost, the `"ot"` metric of its
+`compare_gmm`, where the same comparison across CV folds is the within-type stability reference).
+Per neuron the record holds the distances between every pair of those models and from each to
+the final model, the final model's total spread (root of `mixture_total_variance` summed over the
+axes, the RMS distance of a synapse from the mixture mean) so that `w2_within_rel` =
+median within-distance / spread is the instability relative to the cloud's size, and the median
+within-distance at every candidate k. The between-neuron scale comes from `--between-pairs`
+(2000) random pairs of neurons' final models. `--reruns N` additionally reruns the whole
+selection N times per neuron with independent seeds (N times the fitting time) and compares the
+final models the same way, recording how often they chose the same k; a cloud with at most
+`--max-synapses` synapses is refitted on the same synapses each time, so the reruns isolate the
+EM start and the choice of k, while the repeat models also carry the subsampling variance. Note
+that the mixture Wasserstein distance charges a difference in mixing weights the full squared
+distance between the components, so for a neuron with well-separated components a small weight
+difference between two fits already gives a sizeable distance. `GMMWeighted` starts EM once, from
+k random synapses as means and the global covariance for every component, and can stop in a poor
+optimum (on a cloud with two separated depth bands, about one start in six ends with both
+components wide and centred, far from the other fits and with a lower log-likelihood); the
+rerun record keeps each final model's log-likelihood so such cases can be told from genuine
+ambiguity, and `--starts N` (default 1, as in `../mixture`) keeps the best of N EM starts per
+fit, which removes them at N times the cost.
+
+The library API is `celltype/neuron_gmm.py`: `select_and_fit(points, weight, k_values, ...,
+n_reruns=0)` for any (dx, dy, dz) cloud (a neuron, a cluster's pooled synapses, anything),
+`fit_neuron(clouds, index, k_values, ...)` and `fit_neurons(clouds, indices, k_values,
+n_jobs=...)` for neurons of a clouds file, the `NeuronGMM` result with `log_density`,
+`responsibilities`, `summary` (mixture-averaged lateral and depth spread), `repeat_models`,
+`stability` (`stability_summary`) and `to_dict` / `from_dict` (`save_fits`, `load_fits`;
+`save_stability`, `load_stability` for the repeat and rerun models), and the distances `gmm_w2(a,
+b, method)`, `within_distances`, `distances_to`, `total_spread` and `between_distances(fits,
+n_pairs)`. Component parameters keep the fitter's (dx, dz, dy) axis order. Outputs go to
+`gmm_output/`, a flat folder beside the pipeline's `output/` (both ignored by git); this is test
+code, so the files carry only the side as prefix and every run overwrites the previous one (the
+command and options are recorded in the summary): `<side>_neurons.csv` (covariates, labels, chosen k,
+log-likelihood, BIC, spread, `w2_within_median`, `w2_within_max`, `w2_to_final_mean`,
+`spread_um`, `w2_within_rel`, `n_stability_models`, `w2_rerun_median`, `rerun_k_agreement`),
+`<side>_models.json` (final parameters, k-selection and stability records),
+`<side>_stability.json` (the repeat and rerun models), `<side>_between.csv` (between-neuron
+distances), `<side>_summary.json` (with a `stability` block: within and between medians, their
+ratio, the fraction of neurons whose within-distance is below the 10th percentile of the
+between-distances, rerun agreement), `<side>_selection.png` (chosen-k counts, held-out BIC
+curve) and `<side>_stability.png` (within- vs between-neuron distances, within-distance vs
+synapse count and vs k).
+
 ## Layout
 
 ```
@@ -157,9 +229,13 @@ celltype/    library code (no command-line parsing)
   assign.py      kNN and template assignment, cross-validated calibration
   plotting.py    Stage-C and Stage-D figures
   pipeline.py    the four stages (Stage D optional)
-scripts/     run_pipeline.py (the command-line entry point), compare_trials.py
+  neuron_gmm.py  per-neuron GMMs with the weighted fitter imported from ../mixture
+scripts/     run_pipeline.py (the pipeline entry point), compare_trials.py, fit_neuron_gmms.py
 tests/       pytest unit tests
 jobs/        env.sh (job environment: conda env, 1 BLAS thread) and the unit-test Slurm script
+output/      pipeline outputs per dataset (clouds, trials); ignored by git
+gmm_output/  per-neuron GMM outputs, flat files overwritten by every run; ignored by git
+log/         Slurm logs; ignored by git
 ```
 
 ## Running (on klone, through Slurm only)
@@ -178,6 +254,7 @@ $PYTHON -u scripts/run_pipeline.py --n-neurons 1000 --n-points 200 --stages dist
 $PYTHON -u scripts/run_pipeline.py --n-neurons 1000 --n-points 200 --align --min-border-distance 100 --stages distances cluster
 $PYTHON -u scripts/run_pipeline.py --n-neurons 1000 --stages distances cluster --method shared   # same neurons, MW2
 $PYTHON scripts/compare_trials.py --trial-a n1000_rep10_pt200_... --trial-b n1000_rep10_pt200_aligned_...
+$PYTHON -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 1000 --min-border-distance 100   # per-neuron GMMs
 $PYTHON -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --n-points 200 500   # cluster 3k dendrites
 $PYTHON -u scripts/run_pipeline.py --sides dendrite --n-neurons 3000 --n-points 200 500 --stages assign --query rest   # Stage D
 $PYTHON -u scripts/run_pipeline.py --stages extract --all-cells    # dendrite clouds of every cell (96 GB)

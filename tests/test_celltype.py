@@ -464,3 +464,159 @@ def test_shared_pipeline_recovers_toy_groups(tmp_path, monkeypatch):
     # Reloading gives the same model.
     reloaded = shared.SharedGMM.load(config.shared_model_path("toy", "s", "axon"))
     assert np.allclose(reloaded.cost, model.cost)
+
+
+# ---------------------------------------------------------------------------
+# Per-neuron GMMs with the ../mixture fitter
+# ---------------------------------------------------------------------------
+
+def _mixture_available():
+    from celltype import config
+
+    return (config.MIXTURE_ROOT / "src" / "scratch_models" / "gmm_scratch.py").exists()
+
+
+needs_mixture = pytest.mark.skipif(not _mixture_available(), reason="../mixture is not checked out")
+
+
+@needs_mixture
+def test_mixture_gmm_is_imported_not_copied():
+    from celltype import neuron_gmm
+
+    modules = neuron_gmm.mixture_modules()
+    root = neuron_gmm.MIXTURE_ROOT.resolve()
+    assert all(Path(module.__file__).resolve().is_relative_to(root) for module in modules)
+    assert hasattr(modules.mix_helper, "best_number_component")
+    assert hasattr(modules.distributions, "component_ot_distance")
+    # GMMWeighted's free-parameter counts in 3-D: 7k-1 (diagonal), 4k+1 (constraint), 10k-1 (full).
+    assert [neuron_gmm.n_parameters(2, method) for method in neuron_gmm.METHODS] == [13, 9, 19]
+    assert neuron_gmm.supported_k([1, 2, 3], 300, "diagonal", 20) == ([1, 2], False)
+    assert neuron_gmm.supported_k([2, 3], 100, "diagonal", 20) == ([2], True)
+    with pytest.raises(ValueError):
+        neuron_gmm.select_and_fit(np.zeros((50, 3)), None, [1], n_repeats=2)
+    # Non-consecutive candidates (a k step) are fine: 4 has the lowest BIC in every repetition.
+    bic = np.array([[100.0] * 8, [50.0 + 0.1 * i for i in range(8)], [60.0 + 0.1 * i for i in range(8)]])
+    chosen, p_values, rule = neuron_gmm.choose_k([1, 4, 7], bic)
+    assert chosen == 4 and rule.startswith("mix_helper")
+
+
+@needs_mixture
+def test_gmm_w2_is_the_component_ot_distance():
+    from celltype import neuron_gmm
+
+    def mixture(weights, means, sds):
+        return {"weights": np.asarray(weights, float), "means": np.asarray(means, float),
+                "covariances": np.array([np.diag(np.square(sd)) for sd in sds], float)}
+
+    a = mixture([0.5, 0.5], [[0, 0, -50], [0, 0, 50]], [[10, 10, 20], [15, 15, 20]])
+    assert neuron_gmm.gmm_w2(a, a, "diagonal") == pytest.approx(0.0, abs=1e-6)
+    # Shifting every component by the same vector moves the mixture by exactly its length ...
+    shifted = {**a, "means": a["means"] + np.array([3.0, 4.0, 0.0])}
+    assert neuron_gmm.gmm_w2(a, shifted, "diagonal") == pytest.approx(5.0, abs=1e-6)
+    # ... the full-covariance formula agrees, and the metric is defined across different k.
+    assert neuron_gmm.gmm_w2(a, shifted, "normal") == pytest.approx(5.0, abs=1e-4)
+    single = mixture([1.0], [[0, 0, 0]], [[12, 12, 50]])
+    assert np.isfinite(neuron_gmm.gmm_w2(a, single, "diagonal")) and neuron_gmm.gmm_w2(a, single, "diagonal") > 0
+    assert neuron_gmm.within_distances([a, shifted, a], "diagonal").tolist() == pytest.approx([5, 0, 5], abs=1e-6)
+    assert neuron_gmm.distances_to(a, [shifted, a], "diagonal").tolist() == pytest.approx([5, 0], abs=1e-6)
+    # Total spread: within-component variance plus the between-component spread along depth.
+    expected = np.sqrt(0.5 * (100 + 100 + 400) + 0.5 * (225 + 225 + 400) + 50**2)
+    assert neuron_gmm.total_spread(a) == pytest.approx(expected)
+
+
+@needs_mixture
+def test_select_and_fit_recovers_two_depth_components():
+    from celltype import neuron_gmm
+
+    rng = np.random.default_rng(3)
+    # (dx, dy, dz): two depth bands sharing the lateral centre, 300 synapses each.
+    shallow = np.column_stack([rng.normal(0, 20, 300), rng.normal(-100, 15, 300), rng.normal(0, 20, 300)])
+    deep = np.column_stack([rng.normal(0, 30, 300), rng.normal(80, 25, 300), rng.normal(0, 30, 300)])
+    points = np.vstack([shallow, deep])
+    fit = neuron_gmm.select_and_fit(points, None, [1, 2, 3], method="diagonal_constraint", n_repeats=6,
+                                    min_synapses_per_parameter=10, seed=0)
+    assert fit.k == 2 and fit.means.shape == (2, 3) and fit.covariances.shape == (2, 3, 3)
+    assert np.allclose(sorted(fit.means[:, 2]), [-100, 80], atol=10)      # depth is the last axis
+    assert np.allclose(fit.means[0, :2], fit.means[1, :2])                # one shared lateral centre
+    assert fit.selection["rule"].startswith("mix_helper") and fit.selection["candidates"] == [1, 2, 3]
+    assert not fit.selection["underpowered"] and np.asarray(fit.selection["test_bic"]).shape == (3, 6)
+    density = fit.log_density(points)
+    assert density.shape == (600,) and np.all(np.isfinite(density))
+    assert np.allclose(fit.responsibilities(points).sum(axis=1), 1.0)
+    # Stability: the six repeat fits at k=2 are close to each other and to the final model, well
+    # below the cloud's spread (about 100 um, dominated by the two depth bands). The mixture
+    # Wasserstein distance charges a mixing-weight difference the full squared separation of the
+    # components (180 um here), so a 1% weight difference between subsamples already costs ~18 um.
+    stability = fit.stability
+    assert sorted(fit.repeat_models) == [1, 2, 3] and len(fit.repeat_models[2]) == 6
+    assert stability["n_models"] == 6 and len(stability["within"]) == 15 and len(stability["to_final"]) == 6
+    assert stability["spread_um"] == pytest.approx(100, abs=15)
+    assert 0 < stability["within_median"] < 40 and stability["within_rel"] < 0.4
+    assert stability["to_final_mean"] < 40 and stability["rerun"] is None
+    assert set(stability["per_k"]) == {1, 2, 3} and 0 < stability["per_k"][1]["within_median"] < 20
+    # The JSON parameters score identically without the fitted object.
+    reloaded = neuron_gmm.NeuronGMM.from_dict(json.loads(json.dumps(fit.to_dict())))
+    assert reloaded.model is None and np.allclose(reloaded.log_density(points), density)
+    assert reloaded.summary()["depth_sd_um"] == pytest.approx(fit.summary()["depth_sd_um"])
+    assert reloaded.stability["within_median"] == pytest.approx(stability["within_median"])
+    # Reruns of the whole selection choose k=2 again. GMMWeighted starts EM once, from two random
+    # synapses with the global covariance, and with this seed one rerun (and one of the six repeat
+    # fits above) stops in the degenerate optimum where both components are wide and centred: it
+    # sits ~114 um from the proper fits with a lower log-likelihood, while the other rerun lands on
+    # the main fit exactly (same 600 synapses, only the EM start differs).
+    rerun = neuron_gmm.select_and_fit(points, None, [1, 2, 3], method="diagonal_constraint", n_repeats=6,
+                                      min_synapses_per_parameter=10, seed=0, n_reruns=2)
+    record = rerun.stability["rerun"]
+    assert len(rerun.rerun_models) == 2 and rerun.k == fit.k and np.allclose(rerun.means, fit.means)
+    assert record["k"] == [2, 2, 2] and record["k_agreement"] == 1.0 and len(record["within"]) == 3
+    assert record["within_median"] == pytest.approx(np.median(record["within"]))
+    assert min(record["within"]) < 1 and max(record["within"]) > 50 and stability["within_max"] > 50
+    assert max(record["log_likelihood"]) - min(record["log_likelihood"]) > 0.5
+    # Keeping the best of three EM starts per fit removes that failure mode.
+    starts = neuron_gmm.select_and_fit(points, None, [1, 2, 3], method="diagonal_constraint", n_repeats=6,
+                                       min_synapses_per_parameter=10, seed=0, n_starts=3, n_reruns=2)
+    assert starts.k == 2 and starts.stability["within_max"] < 40
+    assert max(starts.stability["rerun"]["within"]) < 1 and starts.stability["rerun"]["k"] == [2, 2, 2]
+
+
+@needs_mixture
+def test_fit_neurons_table_and_files(tmp_path, monkeypatch):
+    from celltype import neuron_gmm
+
+    clouds = _toy_clouds(tmp_path, monkeypatch)        # 9 neurons, one 150-synapse blob each (sd 15)
+    indices = np.arange(len(clouds))
+    # Two worker processes: the results must come back without the fitter object (whose class
+    # lives in ../mixture, not importable by name in the parent).
+    fits, errors = neuron_gmm.fit_neurons(clouds, indices, [1, 2], n_jobs=2, seed=0, n_repeats=6,
+                                          min_synapses_per_parameter=20)
+    # 150 synapses support k=1 (6 parameters) but not k=2 (13 parameters x 20).
+    assert not errors and all(fit.k == 1 and fit.selection["candidates"] == [1] for fit in fits)
+    assert fits[0].model is None and np.isfinite(fits[0].log_density(clouds.neuron_points(0))).all()
+    table = neuron_gmm.fits_table(fits, clouds, indices)
+    assert len(table) == 9 and {"pt_root_id", "cell_type", "k", "bic", "lateral_sd_um"} <= set(table)
+    assert set(neuron_gmm.STABILITY_COLUMNS) <= set(table)
+    assert np.allclose(table["lateral_sd_um"], 15.0, atol=4)
+    # One Gaussian refitted on 120-synapse subsamples moves by a few um, far below its 26 um spread.
+    assert (table["n_stability_models"] == 6).all() and table["w2_within_median"].between(0.5, 10).all()
+    assert table["spread_um"].between(20, 32).all() and table["w2_rerun_median"].isna().all()
+    neuron_gmm.save_fits(tmp_path / "models.json", fits, clouds.cell_ids[indices], {"k_values": [1, 2]})
+    loaded, cell_ids, options = neuron_gmm.load_fits(tmp_path / "models.json")
+    assert cell_ids.tolist() == list(range(9)) and options == {"k_values": [1, 2]}
+    assert loaded[0].k == 1 and np.allclose(loaded[0].means, fits[0].means)
+    assert loaded[0].stability["within_median"] == pytest.approx(fits[0].stability["within_median"])
+    neuron_gmm.save_stability(tmp_path / "stability.json", fits, clouds.cell_ids[indices])
+    entries, cell_ids = neuron_gmm.load_stability(tmp_path / "stability.json")
+    assert cell_ids.tolist() == list(range(9)) and entries[0]["k"] == 1 and entries[0]["rerun_models"] == []
+    assert len(entries[0]["repeat_models"]) == 6 and entries[0]["repeat_models"][0]["covariances"].shape == (1, 3, 3)
+    # Between-neuron reference: the three toy groups sit 100 um or more apart, so the 27 pairs
+    # across groups are far apart while the 9 pairs within a group look like repeat fits.
+    between = neuron_gmm.between_distances(fits, 100, seed=0)
+    same_group = (between["i"] // 3 == between["j"] // 3).to_numpy()
+    assert len(between) == 36 and same_group.sum() == 9
+    assert (between["w2"][~same_group] > 50).all() and (between["w2"][same_group] < 15).all()
+    assert len(neuron_gmm.between_distances(fits, 10, seed=0)) == 10
+    from celltype import plotting
+
+    plotting.plot_gmm_selection(fits, tmp_path / "selection.png")
+    plotting.plot_gmm_stability(fits, between["w2"], tmp_path / "stability.png")
+    assert (tmp_path / "selection.png").exists() and (tmp_path / "stability.png").exists()
