@@ -2,10 +2,11 @@
 Run the Whole Pipeline
 ======================
 Stage A (extract clouds), then for every side: Stage B (exact distances between
-the complete clouds, plus bootstrap replicates) and Stage C (clustering and checks). Stage D (assigning the
-neurons that were not clustered) is optional and only runs when "assign" is
-listed in --stages. An optional "validate" stage runs disjoint split-half
-consensus validation before Stage B; see docs/split_cluster.md.
+the complete clouds, plus bootstrap replicates) and Stage C (clustering and
+checks). Stage D (assigning the neurons that were not clustered) is optional and
+only runs when "assign" is listed in --stages. An optional "validate" stage runs
+the disjoint split-half consensus validation before Stage B; see
+docs/split_cluster.md.
 
 Everything except the clouds is written to output/<dataset>/trials/<trial>/,
 where <trial> encodes the Stage B and C parameters (e.g.

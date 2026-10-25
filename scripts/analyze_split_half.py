@@ -15,7 +15,6 @@ Example::
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -27,7 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from celltype import pipeline, plotting, split_half
 from celltype.clouds import Clouds
-from celltype.config import (DATASETS, SIDES, allocated_cpus, clouds_path,
+from celltype.config import (DATASETS, SIDES, allocated_cpus, clouds_path, file_fingerprint,
                              split_half_dir, split_half_name)
 
 
@@ -43,15 +42,6 @@ def _nonnegative(value):
     if value < 0:
         raise argparse.ArgumentTypeError("must be a nonnegative integer")
     return value
-
-
-def _source_info(path):
-    """Content fingerprint prevents stale reuse when Stage A was regenerated in place."""
-    digest = hashlib.sha256()
-    with open(path, "rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return {"filename": path.name, "size_bytes": path.stat().st_size, "sha256": digest.hexdigest()}
 
 
 def main(argv=None):
@@ -89,7 +79,9 @@ def main(argv=None):
                    "points_per_half": sizes, "n_reps": args.n_reps, "n_pairs": args.between_pairs,
                    "n_neurons": args.n_neurons, "min_synapses": args.min_synapses,
                    "min_border_um": args.min_border_distance, "align": args.align,
-                   "use_weights": not args.no_weights, "seed": args.seed, "source": _source_info(path)}
+                   "use_weights": not args.no_weights, "seed": args.seed,
+                   # The fingerprint prevents stale reuse when Stage A was regenerated in place.
+                   "source": file_fingerprint(path)}
         outdir = split_half_dir(args.dataset, split_half_name(options), side)
         outputs = ("distances.npz", "neurons.csv", "pairs.csv", "config.json", "summary.json",
                    "distributions.png", "sample_size.png", "covariates.png")

@@ -4,14 +4,15 @@ Pipeline Stages
 The stages run by ``scripts/run_pipeline.py``. Each stage reads the previous
 stage's files from ``output/<dataset>/`` and writes its own:
 
-  A  extract_clouds         clouds_{axon,dendrite}.npz
-     extract_all_dendrites  clouds_dendrite_all.npz (every cell, for --query all)
-     validate_neurons      trials/<trial>/validate_<side>/ (optional, disjoint synapse halves)
-  B  compute_exact_distances trials/<trial>/dist_<side>/exact.npz (--method points)
-     fit_shared_model        trials/<trial>/shared_<side>.npz (--method shared only)
-     compute_distances       trials/<trial>/dist_<side>/rep<b>.npz (bootstrap replicates)
-  C  cluster_neurons        trials/<trial>/cluster_<side>/
-  D  assign_neurons         trials/<trial>/assign_<side>_<query>/ (optional: --stages ... assign)
+  A  extract_clouds           clouds_{axon,dendrite}.npz
+     extract_all_dendrites    clouds_dendrite_all.npz (every cell, for --query all)
+     validate_neurons         trials/<trial>/validate_<side>/<run>/ (optional: --stages ... validate;
+                              disjoint synapse halves of the Stage B/C cohort, see split_cluster.py)
+  B  compute_exact_distances  trials/<trial>/dist_<side>/exact.npz (--method points)
+     fit_shared_model         trials/<trial>/shared_<side>.npz (--method shared only)
+     compute_distances        trials/<trial>/dist_<side>/rep<b>.npz (bootstrap replicates)
+  C  cluster_neurons          trials/<trial>/cluster_<side>/
+  D  assign_neurons           trials/<trial>/assign_<side>_<query>/ (optional: --stages ... assign)
 """
 
 from __future__ import annotations
@@ -317,10 +318,10 @@ def cluster_neurons(dataset, trial, side, *, linkage, k_values, min_cluster_size
     consensus, ambiguity, stab = fit["consensus"], fit["pac"], fit["stability"]
     k_values = list(consensus)
     agreement = clustering.label_agreement(table, consensus, k_values)
-    # k whose consensus has fewer than k major clusters repeats a smaller cut; blank it out.
+    # k whose consensus has fewer than k major clusters repeats a smaller cut; blank it out
+    # (fit_consensus already blanked its PAC).
     reached = fit["reached"]
     for kk in set(k_values) - set(reached):
-        ambiguity[kk] = float("nan")
         for column in agreement:
             agreement[column][kk] = {"ami": float("nan"), "ari": float("nan")}
     chosen_k, k_selection = fit["chosen_k"], fit["k_selection"]

@@ -23,6 +23,10 @@ Split-half diagnostics (celltype/split_half.py):
   split_half_distributions  split ranges per neuron, distributions of medians, endpoint baselines
   split_half_curves         matched-distance medians vs points per half, with a fixed cohort
   split_half_covariates     self-distance vs cloud spread and weight concentration
+
+Clustering validation (celltype/split_cluster.py):
+  split_cluster              ARI vs joint coverage, held-out separation, k chosen from half A, per m
+  split_cluster_contingency  A labels x B labels of one representative split
 """
 
 from __future__ import annotations

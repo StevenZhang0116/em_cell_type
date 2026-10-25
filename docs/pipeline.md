@@ -125,7 +125,7 @@ matrices of the pairs in flight.
 | `distance.npy` | the exact distance matrix of the complete clouds (points method) or the replicate mean (shared method) |
 | `k_curves.png` | per-replicate stability (dots, median, IQR), PAC and AMI with dataset labels vs k |
 | `co_clustering.png` | co-clustering matrix at the chosen k, sorted by consensus cluster |
-| `tree_heatmap.png` | dendrogram of the mean distance matrix with cell_type and cluster barcodes |
+| `tree_heatmap.png` | dendrogram and heatmap of the clustered distance matrix (`distance.npy`) with cell_type and cluster barcodes |
 | `noise_floor.png`, `contingency.png`, `covariates.png` | self vs nearest-neighbour distance, cell_type x cluster counts, covariates per cluster |
 
 ## Caveat

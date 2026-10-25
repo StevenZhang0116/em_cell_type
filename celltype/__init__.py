@@ -15,11 +15,12 @@ Modules:
   clustering  hierarchical clustering, stability, noise floor, label/confound checks
   templates   cylindrically constrained weighted GMM used as cluster templates
   assign      kNN and template assignment with cross-validated calibration
-  plotting    figures for the clustering and assignment stages
-  pipeline    the stages (extract, distances, cluster; assign is optional)
+  plotting    figures for the clustering and assignment stages and the diagnostics
+  pipeline    the stages (extract, distances, cluster; validate and assign are optional)
   neuron_gmm  per-neuron Gaussian mixtures with the weighted GMM fitter imported from ../mixture,
               and their fitting stability (mixture Wasserstein distance between repeated fits)
   split_half  disjoint, sample-matched self/between distances on a fixed neuron cohort
+  split_cluster  held-out validation of the consensus clustering on disjoint synapse halves
 
 Stages are in pipeline.py; the command-line entry point is ../scripts/run_pipeline.py.
 """

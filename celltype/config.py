@@ -8,15 +8,17 @@ Input tables are the ones used by the Stage-1 GMM fit in
   clouds_<side>.npz                              (Stage A, shared)
   clouds_dendrite_all.npz                        (Stage A with --all-cells)
   trials/<trial>/config.json                     (run parameters)
-  trials/<trial>/validate_<side>/<run>/           (optional split-half clustering validation)
+  trials/<trial>/validate_<side>/<run>/          (optional split-half clustering validation)
   trials/<trial>/shared_<side>.npz               (Stage B, --method shared only)
   trials/<trial>/dist_<side>/exact.npz           (Stage B, --method points: complete clouds)
   trials/<trial>/dist_<side>/rep<b>.npz          (Stage B, bootstrap replicates)
   trials/<trial>/cluster_<side>/...              (Stage C)
   trials/<trial>/assign_<side>_<query>/          (Stage D, optional)
+  split_half/<run>/<side>/                       (scripts/analyze_split_half.py, beside the trials)
 
 ``<trial>`` is built from the Stage B and C parameters (``trial_name``), so
-runs with different parameters never share or overwrite each other's files.
+runs with different parameters never share or overwrite each other's files;
+``<run>`` names carry a digest of every option of the analysis.
 
 The per-neuron GMM analysis (scripts/fit_neuron_gmms.py, test code) writes
 flat files gmm_output/<side>_*.{csv,json,png}; every run overwrites the last.
@@ -140,11 +142,15 @@ def gmm_dir():
     return _ensure(GMM_OUTPUT_ROOT)
 
 
+def _options_digest(options, length):
+    """Leading hex digits of the SHA-256 of a JSON-serialisable options dict."""
+    return hashlib.sha256(json.dumps(options, sort_keys=True, allow_nan=False).encode()).hexdigest()[:length]
+
+
 def split_half_name(options):
     """Readable diagnostic name plus a digest of all options and the input-cloud fingerprint."""
-    digest = hashlib.sha256(json.dumps(options, sort_keys=True, allow_nan=False).encode()).hexdigest()[:12]
     sizes = "-".join(str(m) for m in options["points_per_half"])
-    return f"m{sizes}_rep{options['n_reps']}_n{options['n_neurons'] or 'all'}_{digest}"
+    return f"m{sizes}_rep{options['n_reps']}_n{options['n_neurons'] or 'all'}_{_options_digest(options, 12)}"
 
 
 def split_half_dir(dataset, run, side):
@@ -164,6 +170,6 @@ def file_fingerprint(path):
 
 def validation_dir(dataset, trial, side, options):
     """One validation run per source, cohort and complete set of settings."""
-    digest = hashlib.sha256(json.dumps(options, sort_keys=True, allow_nan=False).encode()).hexdigest()[:16]
     sizes = "-".join(str(m) for m in options["points_per_half"])
-    return _ensure(trial_dir(dataset, trial) / f"validate_{side}" / f"m{sizes}_rep{options['outer_reps']}_{digest}")
+    return _ensure(trial_dir(dataset, trial) / f"validate_{side}"
+                   / f"m{sizes}_rep{options['outer_reps']}_{_options_digest(options, 16)}")

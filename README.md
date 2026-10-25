@@ -49,7 +49,7 @@ interactive node (e.g. `salloc --account=amath --partition=cpu-g2 -c 10 --mem=32
 96 GB of memory, everything else a few GB.
 
 ```bash
-sbatch jobs/unit_tests.slurm                                       # pytest unit tests (1 CPU, about 2 min)
+sbatch jobs/unit_tests.slurm                                       # pytest unit tests (1 CPU, about 3 min)
 source jobs/env.sh                                                 # on the allocated node
 $PYTHON -u scripts/run_pipeline.py --stages extract                # Stage A, once (96 GB)
 $PYTHON -u scripts/run_pipeline.py --sides axon                    # all proofread axons: Stages B and C
@@ -69,13 +69,13 @@ never overwrite each other; finished stages are skipped unless `--overwrite`.
 celltype/    library code (no command-line parsing)
   config.py      paths, dataset tables, output layout, Slurm-aware CPU count
   clouds.py      extraction and CSR reader for per-neuron synapse clouds
-  distances.py   resampling and exact W2 between point clouds
+  distances.py   exact W2 between complete point clouds, bootstrap replicates
   shared.py      shared-component mixture, per-neuron mixing weights, MW2
   clustering.py  clustering, stability, noise floor, label and confound checks
   templates.py   cylindrically constrained weighted GMM (cluster templates)
   assign.py      kNN and template assignment, cross-validated calibration
-  plotting.py    Stage-C, Stage-D and per-neuron GMM figures
-  pipeline.py    the four stages (Stage D optional)
+  plotting.py    Stage-C, Stage-D, per-neuron GMM, split-half and validation figures
+  pipeline.py    the stages (validate and Stage D optional)
   neuron_gmm.py  per-neuron GMMs with the weighted fitter imported from ../mixture
   split_half.py  disjoint, sample-matched self/between W2 diagnostics
   split_cluster.py  held-out validation of bootstrap consensus clustering
