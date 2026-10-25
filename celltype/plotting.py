@@ -16,7 +16,7 @@ Stage D figures:
   queries        posterior confidence and label counts of the assigned queries
 
 Per-neuron GMM figures (celltype/neuron_gmm.py):
-  gmm_selection  chosen-k counts and the held-out BIC curve (relative to each neuron's best k)
+  gmm_selection  chosen number of components per neuron and the held-out BIC curve (relative to each neuron's best)
   gmm_stability  within-neuron vs between-neuron mixture Wasserstein distances, vs synapse count and k
 
 Split-half diagnostics (celltype/split_half.py):
@@ -404,7 +404,7 @@ def plot_templates(templates, clouds, indices, labels, path, slab=30.0, max_poin
 
 
 def plot_gmm_selection(fits, path):
-    """Chosen k per neuron and, per candidate k, the mean held-out BIC minus the neuron's lowest.
+    """Chosen number of components per neuron and, per candidate number, the mean held-out BIC minus the neuron's lowest.
 
     ``fits`` are ``NeuronGMM`` objects (None entries skipped). The right panel
     shows the median and interquartile range over neurons; a flat curve means

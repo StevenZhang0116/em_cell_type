@@ -5,6 +5,10 @@ Gaussian mixture class of `../mixture` (`src/scratch_models/gmm_scratch.py`, `GM
 imported, not copied) to the soma-centred synapse cloud of every selected neuron and
 measures how stable those fits are. The library code is `celltype/neuron_gmm.py`.
 
+On this page k is the number of mixture components of one neuron's fit. It has nothing to
+do with the k of the clustering (`--k-min`/`--k-max` of `run_pipeline.py`), which is why the
+script's options are called `--components-min`, `--components-max` and `--components-step`.
+
 ## The fit and the choice of k
 
 The recipe is that of the Stage-1 cell-type model in `../mixture/src/modeling/mixture_all.py`:
@@ -16,7 +20,7 @@ different (paired Wilcoxon test) from those of the k with the lowest mean BIC. T
 cannot reject with fewer than 6 repetitions, so `--repeats` must be at least 6 (`../mixture`
 uses 20 or 50; default 20).
 
-`--method` picks the covariance: `diagonal` (what `../mixture` uses for its
+`--covariance` picks the covariance form: `diagonal` (what `../mixture` uses for its
 relative-coordinate fits), `diagonal_constraint` (its cylindrical variant: one lateral centre
 shared by all components, one lateral variance per component) or `normal` (full
 covariances).
@@ -28,18 +32,19 @@ neuron's own fits run one after another), and the script logs the fitting plan (
 per neuron, EM fits per neuron) and then one line per finished neuron with its chosen k,
 fitting time and the estimated time left.
 
-### Which k to try
+### Which numbers of components to try
 
 Candidates are limited to k with at least `--min-synapses-per-parameter` (20) synapses per
 free parameter, as in `../mixture`; a diagonal k-component mixture has 7k - 1 parameters, so
 k = 2, 3, 4 need 260, 400, 540 synapses and k = 16 needs 2220. The default range is
-`--k-min 1 --k-max 16 --k-step 3` (1, 4, 7, 10, 13, 16), chosen for dendrites: the median
-proofread dendrite has 2400 synapses and supports up to about k = 17, and `--k-step` keeps
-the cost of the wide range down. It is wrong for axons: the median proofread axon has 400
-synapses, so under the default range two thirds of the axons have k = 1 as their only
-candidate (k = 4 needs 540). Run the axon side with `--k-min 1 --k-max 4 --k-step 1`
-(`../mixture` tries 2 to 4 for clouds under 10k synapses). A cloud that supports none of
-the candidates is fitted with the smallest one and flagged `underpowered`.
+`--components-min 1 --components-max 16 --components-step 3` (1, 4, 7, 10, 13, 16), chosen
+for dendrites: the median proofread dendrite has 2400 synapses and supports up to about
+k = 17, and `--components-step` keeps the cost of the wide range down. It is wrong for axons:
+the median proofread axon has 400 synapses, so under the default range two thirds of the
+axons have k = 1 as their only candidate (k = 4 needs 540). Run the axon side with
+`--components-min 1 --components-max 4 --components-step 1` (`../mixture` tries 2 to 4 for
+clouds under 10k synapses). A cloud that supports none of the candidates is fitted with the
+smallest one and flagged `underpowered`.
 
 ## Fitting stability
 
@@ -100,20 +105,20 @@ the previous one; the command and options are recorded in the summary.
 
 | File | Content |
 |---|---|
-| `<side>_neurons.csv` | per neuron: covariates, labels, chosen k, log-likelihood, BIC, spread, `w2_within_median`, `w2_within_max`, `w2_to_final_mean`, `spread_um`, `w2_within_rel`, `n_stability_models`, `w2_rerun_median`, `rerun_k_agreement` |
+| `<side>_neurons.csv` | per neuron: covariates, labels, chosen number of components (`n_components`), log-likelihood, BIC, spread, `w2_within_median`, `w2_within_max`, `w2_to_final_mean`, `spread_um`, `w2_within_rel`, `n_stability_models`, `w2_rerun_median`, `rerun_k_agreement` |
 | `<side>_models.json` | every final mixture (weights, means, covariances) with its k-selection and stability records |
 | `<side>_stability.json` | the repeat models at the chosen k and the rerun models of every neuron |
 | `<side>_between.csv` | W2 between the final models of random pairs of neurons |
-| `<side>_summary.json` | options, chosen-k counts, medians, a `stability` block (within and between medians, their ratio, the fraction of neurons whose within-distance is below the 10th percentile of the between-distances, rerun agreement), failures, time |
-| `<side>_selection.png` | chosen-k counts and the held-out BIC curve |
+| `<side>_summary.json` | options, `n_components_counts`, medians, a `stability` block (within and between medians, their ratio, the fraction of neurons whose within-distance is below the 10th percentile of the between-distances, rerun agreement), failures, time |
+| `<side>_selection.png` | counts of the chosen number of components and the held-out BIC curve |
 | `<side>_stability.png` | within- vs between-neuron distances, within-distance vs synapse count and vs k |
 
 ## Examples
 
 ```bash
 source jobs/env.sh
-$PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --starts 3          # default k 1-16 by 3
-$PYTHON -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 1000 --k-max 4 --k-step 1 --min-border-distance 100
+$PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --starts 3          # default components 1-16 by 3
+$PYTHON -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 1000 --components-max 4 --components-step 1 --min-border-distance 100
 $PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 50 --reruns 2           # rerun agreement
-$PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --method diagonal_constraint
+$PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --covariance diagonal_constraint
 ```

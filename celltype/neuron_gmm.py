@@ -531,7 +531,7 @@ def fit_neurons(clouds, indices, k_values, *, use_weights=True, n_jobs=1, seed=0
 
 
 def fits_table(fits, clouds, indices):
-    """Per-neuron table: identity, covariates, dataset labels, chosen k, fit quality, spread."""
+    """Per-neuron table: identity, covariates, dataset labels, chosen number of components, fit quality, spread."""
     rows = []
     for index, fit in zip(indices, fits):
         row = {"pt_root_id": int(clouds.cell_ids[index]), "n_synapses": int(clouds.n_synapses[index]),
@@ -541,12 +541,12 @@ def fits_table(fits, clouds, indices):
             if key in clouds.meta:
                 row[column] = clouds.meta[key][index]
         if fit is None:
-            row.update(k=np.nan, n_fitted=0, log_likelihood=np.nan, bic=np.nan, candidates="",
+            row.update(n_components=np.nan, n_fitted=0, log_likelihood=np.nan, bic=np.nan, candidates="",
                        lateral_sd_um=np.nan, depth_sd_um=np.nan, depth_centre_um=np.nan,
                        **{**dict.fromkeys(STABILITY_COLUMNS, np.nan), "n_stability_models": 0})
         else:
             stability, rerun = fit.stability, fit.stability.get("rerun")
-            row.update(k=fit.k, n_fitted=fit.n_synapses, log_likelihood=fit.log_likelihood, bic=fit.bic,
+            row.update(n_components=fit.k, n_fitted=fit.n_synapses, log_likelihood=fit.log_likelihood, bic=fit.bic,
                        candidates="-".join(map(str, fit.selection["candidates"])), **fit.summary(),
                        w2_within_median=stability.get("within_median", np.nan),
                        w2_within_max=stability.get("within_max", np.nan),

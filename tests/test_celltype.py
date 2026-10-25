@@ -621,7 +621,8 @@ def test_fit_neurons_table_and_files(tmp_path, monkeypatch):
     assert not errors and all(fit.k == 1 and fit.selection["candidates"] == [1] for fit in fits)
     assert fits[0].model is None and np.isfinite(fits[0].log_density(clouds.neuron_points(0))).all()
     table = neuron_gmm.fits_table(fits, clouds, indices)
-    assert len(table) == 9 and {"pt_root_id", "cell_type", "k", "bic", "lateral_sd_um"} <= set(table)
+    assert len(table) == 9 and {"pt_root_id", "cell_type", "n_components", "bic", "lateral_sd_um"} <= set(table)
+    assert (table["n_components"] == 1).all()
     assert set(neuron_gmm.STABILITY_COLUMNS) <= set(table)
     assert np.allclose(table["lateral_sd_um"], 15.0, atol=4)
     # One Gaussian refitted on 120-synapse subsamples moves by a few um, far below its 26 um spread.

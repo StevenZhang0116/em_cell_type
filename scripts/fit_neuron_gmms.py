@@ -22,21 +22,25 @@ the trial's cluster tables on pt_root_id. This is test code, so the outputs
 are flat files in gmm_output/ with the side as prefix, and every run
 overwrites the previous one (the options and command are in the summary):
 
-  <side>_neurons.csv    per neuron: covariates, labels, chosen k, log-likelihood, BIC, spread,
-                        within-neuron W2 (median, max, relative to the spread), rerun agreement
+  <side>_neurons.csv    per neuron: covariates, labels, chosen number of components, log-likelihood,
+                        BIC, spread, within-neuron W2 (median, max, relative to the spread), rerun agreement
   <side>_models.json    every final mixture (weights, means, covariances in (dx, dz, dy) order)
-                        with its k-selection and stability records
-  <side>_stability.json the repeat models at the chosen k (and rerun models) of every neuron
+                        with its selection and stability records
+  <side>_stability.json the repeat models at the chosen number of components (and rerun models)
   <side>_between.csv    W2 between the final models of random pairs of neurons
-  <side>_summary.json   options, chosen-k counts, medians, stability summary, failures, time
-  <side>_selection.png  chosen-k histogram and the held-out BIC curve
-  <side>_stability.png  within- vs between-neuron W2, W2 vs synapse count, W2 vs k
+  <side>_summary.json   options, component counts, medians, stability summary, failures, time
+  <side>_selection.png  histogram of the chosen number of components and the held-out BIC curve
+  <side>_stability.png  within- vs between-neuron W2, W2 vs synapse count, W2 vs components
+
+"Components" throughout are the mixture components of one neuron's GMM
+(--components-min/--components-max/--components-step); the k of the clustering
+(--k-min/--k-max of run_pipeline.py) is a different thing.
 
 Example::
 
-    python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 1000 --k-max 4 --k-step 1 --min-border-distance 100
-    python -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --method diagonal_constraint
-    python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 50 --k-min 2 --k-max 4 --k-step 1 --repeats 6
+    python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 1000 --components-max 4 --components-step 1 --min-border-distance 100
+    python -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --covariance diagonal_constraint
+    python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 50 --components-min 2 --components-max 4 --components-step 1 --repeats 6
     python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 100 --reruns 5
 """
 
@@ -65,7 +69,7 @@ def _median(values):
 
 def stability_report(table, between):
     """Summary numbers of the within-neuron distances against the between-neuron reference."""
-    fitted = table[table["k"].notna()]
+    fitted = table[table["n_components"].notna()]
     within = fitted["w2_within_median"].to_numpy(dtype=float)
     within = within[np.isfinite(within)]
     report = {"n_neurons_with_stability": int(within.size),
@@ -99,18 +103,20 @@ def main():
                         help="exclude neurons whose soma is closer than this (um) to the volume border")
     parser.add_argument("--no-weights", action="store_true", help="ignore border-compensation weights")
     parser.add_argument("--seed", type=int, default=20261019)
-    # Fit options (see celltype/neuron_gmm.py)
-    parser.add_argument("--method", choices=neuron_gmm.METHODS, default="diagonal",
-                        help="GMMWeighted covariance method; diagonal is what ../mixture uses for its "
+    # Fit options (see celltype/neuron_gmm.py); "components" are the mixture components of one
+    # neuron's GMM, unrelated to the clusters (--k-min/--k-max) of run_pipeline.py.
+    parser.add_argument("--covariance", choices=neuron_gmm.METHODS, default="diagonal",
+                        help="GMMWeighted covariance form; diagonal is what ../mixture uses for its "
                              "relative-coordinate cell-type fits, diagonal_constraint its cylindrical variant")
-    parser.add_argument("--k-min", type=int, default=1,
-                        help="smallest number of components tried (../mixture tries 2 to 4 for clouds "
-                             "under 10k synapses; the default 1-16 by 3 tries 1, 4, 7, 10, 13, 16, which "
-                             "suits dendrites; axons with a few hundred synapses support only k up to "
-                             "2-4 at 20 synapses per parameter, so use --k-max 4 --k-step 1 for them)")
-    parser.add_argument("--k-max", type=int, default=16)
-    parser.add_argument("--k-step", type=int, default=3,
-                        help="try every k-step-th value from --k-min to --k-max")
+    parser.add_argument("--components-min", type=int, default=1,
+                        help="smallest number of mixture components tried (../mixture tries 2 to 4 for "
+                             "clouds under 10k synapses; the default 1-16 by 3 tries 1, 4, 7, 10, 13, 16, "
+                             "which suits dendrites; axons with a few hundred synapses support only 2-4 "
+                             "components at 20 synapses per parameter, so use --components-max 4 "
+                             "--components-step 1 for them)")
+    parser.add_argument("--components-max", type=int, default=16)
+    parser.add_argument("--components-step", type=int, default=3,
+                        help="try every components-step-th value from --components-min to --components-max")
     parser.add_argument("--repeats", type=int, default=20,
                         help="train/test repetitions per neuron for choosing k (at least "
                              f"{neuron_gmm.MIN_REPEATS}; ../mixture uses 20 or 50); the models fitted "
@@ -135,8 +141,8 @@ def main():
     start = time.time()
 
     outdir = gmm_dir()
-    k_values = list(range(args.k_min, args.k_max + 1, max(args.k_step, 1)))
-    options = dict(method=args.method, n_repeats=args.repeats, max_synapses=args.max_synapses,
+    k_values = list(range(args.components_min, args.components_max + 1, max(args.components_step, 1)))
+    options = dict(method=args.covariance, n_repeats=args.repeats, max_synapses=args.max_synapses,
                    test_fraction=args.test_fraction,
                    min_synapses_per_parameter=args.min_synapses_per_parameter, n_starts=args.starts,
                    n_reruns=args.reruns)
@@ -152,15 +158,16 @@ def main():
         clouds = Clouds(path)
         indices = pipeline.select_neurons(clouds, args.min_synapses, args.n_neurons, args.seed,
                                           args.min_border_distance)
-        print(f"== {side}: fitting {indices.size} neurons, k in {k_values}, method {args.method}, "
-              f"{args.repeats} repeats, {args.starts} EM starts per fit, {args.reruns} reruns")
+        print(f"== {side}: fitting {indices.size} neurons, components in {k_values}, covariance "
+              f"{args.covariance}, {args.repeats} repeats, {args.starts} EM starts per fit, "
+              f"{args.reruns} reruns")
         fits, errors = neuron_gmm.fit_neurons(clouds, indices, k_values, use_weights=not args.no_weights,
                                               n_jobs=n_jobs, seed=args.seed, log=print, **options)
         cell_ids = clouds.cell_ids[indices]
         table = neuron_gmm.fits_table(fits, clouds, indices)
         table.to_csv(outdir / f"{side}_neurons.csv", index=False)
         neuron_gmm.save_fits(outdir / f"{side}_models.json", fits, cell_ids,
-                             {**options, "k_values": k_values, "use_weights": not args.no_weights,
+                             {**options, "components": k_values, "use_weights": not args.no_weights,
                               "seed": args.seed})
         neuron_gmm.save_stability(outdir / f"{side}_stability.json", fits, cell_ids)
         plotting.plot_gmm_selection(fits, outdir / f"{side}_selection.png")
@@ -171,15 +178,16 @@ def main():
         between.to_csv(outdir / f"{side}_between.csv", index=False)
         plotting.plot_gmm_stability(fits, between["w2"], outdir / f"{side}_stability.png")
 
-        fitted = table[table["k"].notna()]
+        fitted = table[table["n_components"].notna()]
         summary = {
             "side": side, "command": " ".join(sys.argv), "dataset": args.dataset,
-            "options": options, "k_values": k_values, "seed": args.seed,
+            "options": options, "components": k_values, "seed": args.seed,
             "selection": {"n_neurons": args.n_neurons, "min_synapses": args.min_synapses,
                           "min_border_distance": args.min_border_distance,
                           "use_weights": not args.no_weights},
             "n_neurons": int(indices.size), "n_fitted": int(len(fitted)), "n_failed": len(errors),
-            "chosen_k_counts": {str(int(k)): int(n) for k, n in fitted["k"].value_counts().sort_index().items()},
+            "n_components_counts": {str(int(k)): int(n)
+                                    for k, n in fitted["n_components"].value_counts().sort_index().items()},
             "n_underpowered": int(sum(fit is not None and fit.selection["underpowered"] for fit in fits)),
             "median_log_likelihood": _median(fitted["log_likelihood"]),
             "median_lateral_sd_um": _median(fitted["lateral_sd_um"]),
@@ -191,7 +199,7 @@ def main():
         with open(outdir / f"{side}_summary.json", "w") as handle:
             json.dump(summary, handle, indent=2)
         print(json.dumps({key: summary[key] for key in
-                          ("n_neurons", "n_fitted", "n_failed", "chosen_k_counts", "n_underpowered",
+                          ("n_neurons", "n_fitted", "n_failed", "n_components_counts", "n_underpowered",
                            "median_log_likelihood", "median_lateral_sd_um", "median_depth_sd_um",
                            "stability")}, indent=2))
         print(f"   {side} done in {(time.time() - start) / 60:.1f} min; outputs in {outdir}")
