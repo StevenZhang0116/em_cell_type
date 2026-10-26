@@ -23,7 +23,9 @@ The clouds are shared; everything else goes to `output/<dataset>/trials/`, one s
 per dataset. Its `config.json` records the Stage B and C parameters of the last run; a run
 with other parameters recomputes the stages it runs and overwrites the previous files, so
 files of different settings never mix. With the same parameters, finished outputs are
-skipped unless `--overwrite`.
+skipped unless `--overwrite`. `--n-reps` is the exception: a replicate depends only on the
+seed and its index, so a smaller count deletes the replicate files beyond it and a larger
+one adds the missing ones, and Stage C runs again on exactly the requested replicates.
 
 - `--sides` takes one or both sides (default: both).
 - `--max-synapses N` (points method; default none) caps clouds above N synapses by a uniform

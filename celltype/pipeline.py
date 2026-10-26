@@ -88,16 +88,36 @@ def record_params(dataset, params):
 
     There is one set of outputs per dataset, so a run with other parameters
     must recompute what it runs; the caller then overwrites the previous files
-    instead of mixing them with the new ones.
+    instead of mixing them with the new ones. ``n_reps`` does not count: a
+    bootstrap replicate depends only on the seed and its index, so another
+    count merely adds or removes replicate files (``prune_distances``).
     """
     path = trial_dir(dataset) / "config.json"
     changed = False
     if path.exists():
         with open(path) as handle:
-            changed = json.load(handle) != params
+            previous = json.load(handle)
+        changed = any(previous.get(key) != params.get(key)
+                      for key in set(previous) | set(params) if key != "n_reps")
     with open(path, "w") as handle:
         json.dump(params, handle, indent=2)
     return changed
+
+
+def prune_distances(dataset, side, n_reps, overwrite=False):
+    """Delete Stage B files that Stage C would otherwise mix in; True when something was deleted.
+
+    Replicate files beyond ``n_reps`` always go (``load_replicates`` reads every
+    ``rep*.npz``); with ``overwrite`` every distance file and the shared mixture
+    go, so that nothing of the previous parameters survives.
+    """
+    directory = distance_dir(dataset, side)
+    stale = [path for path in directory.glob("rep*.npz") if overwrite or int(path.stem[3:]) >= n_reps]
+    if overwrite:
+        stale += [path for path in (directory / "exact.npz", shared_model_path(dataset, side)) if path.exists()]
+    for path in stale:
+        path.unlink()
+    return bool(stale)
 
 
 def validate_neurons(dataset, side, *, points_per_half, outer_reps, params, overwrite=False):

@@ -18,7 +18,7 @@ copied.
 | C | consensus clustering of the replicates, choice of k, checks against the dataset labels and confounds | `trials/cluster_<side>/` |
 
 Beside the pipeline, `scripts/fit_neuron_gmms.py` fits the weighted Gaussian mixture of
-`../mixture` to every neuron and measures how stable those fits are (`gmm_output/`).
+`../mixture` to every neuron and measures how stable those fits are (`output/<dataset>/gmm/`).
 `scripts/analyze_split_half.py` measures within-neuron variability using disjoint
 synapse halves and compares it with sample-matched between-neuron distances on a
 fixed cohort (`output/<dataset>/split_half/`). These are sampling diagnostics, not
@@ -58,8 +58,9 @@ $PYTHON -u scripts/run_pipeline.py --sides dendrite --stages validate --n-neuron
 
 All outputs of a dataset live in `output/<dataset>/trials/`, one set per dataset; its
 `config.json` records the Stage B and C parameters of the last run. A run with other
-parameters recomputes the stages it runs and overwrites the previous files; with the same
-parameters, finished stages are skipped unless `--overwrite`.
+parameters recomputes the stages it runs and overwrites the previous files (changing only
+`--n-reps` adds or removes replicate files); with the same parameters, finished stages are
+skipped unless `--overwrite`.
 
 ## Layout
 
@@ -79,7 +80,6 @@ scripts/     run_pipeline.py, fit_neuron_gmms.py, analyze_split_half.py
 docs/        pipeline.md, neuron_gmm.md, split_half.md, split_cluster.md
 tests/       pytest unit tests
 jobs/        env.sh (job environment: conda env, 1 BLAS thread), the unit-test and validation Slurm scripts
-output/      pipeline outputs per dataset (clouds, trials); ignored by git
-gmm_output/  per-neuron GMM outputs, flat files overwritten by every run; ignored by git
+output/      outputs per dataset (clouds, trials, split_half, gmm); ignored by git
 log/         Slurm logs; ignored by git
 ```

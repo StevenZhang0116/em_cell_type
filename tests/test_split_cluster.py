@@ -275,11 +275,22 @@ def test_cli_validate_then_full_fit(clouds):
     (config.cluster_dir("microns", "dendrite") / "summary.json").write_text(json.dumps(full))
     pipeline.compare_validation_to_full(path.parent, "microns", "dendrite")
     assert json.loads(path.read_text())["full_fit"]["status"] == "full_fit_mismatch"
-    # Other Stage B/C parameters recompute the outputs in place.
+    # Another replicate count adds or removes replicate files and reclusters; the exact
+    # matrix stays. Stage C then sees exactly the requested replicates.
+    distances = config.distance_dir("microns", "dendrite")
+    exact = (distances / "exact.npz").stat().st_mtime_ns
     run_pipeline.main(args + ["--n-reps", "3"])
-    assert (config.distance_dir("microns", "dendrite") / "rep002.npz").exists()
+    assert sorted(p.name for p in distances.glob("rep*.npz")) == ["rep000.npz", "rep001.npz", "rep002.npz"]
     assert json.loads((config.trial_dir("microns") / "config.json").read_text())["n_reps"] == 3
     assert json.loads(path.read_text())["full_fit"]["status"] == "compatible"
+    run_pipeline.main(args + ["--n-reps", "1"])
+    assert [p.name for p in distances.glob("rep*.npz")] == ["rep000.npz"]
+    assert (distances / "exact.npz").stat().st_mtime_ns == exact
+    assert json.loads((config.cluster_dir("microns", "dendrite") / "summary.json").read_text())["n_replicates"] == 1
+    # Any other parameter clears the distance files and recomputes them.
+    run_pipeline.main(args + ["--n-reps", "1", "--seed", "18"])
+    assert (distances / "exact.npz").stat().st_mtime_ns != exact
+    assert [p.name for p in distances.glob("rep*.npz")] == ["rep000.npz"]
 
 
 @pytest.mark.parametrize("extra", [["--method", "shared"], ["--validation-reps", "0"],

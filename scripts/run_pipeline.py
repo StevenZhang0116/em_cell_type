@@ -9,9 +9,9 @@ validation before Stage B; see docs/split_cluster.md.
 Everything except the clouds is written to output/<dataset>/trials/, one set
 of outputs per dataset; its config.json records the Stage B and C parameters
 of the last run. A run with other parameters recomputes the stages it runs
-and overwrites the previous files. With the same parameters, finished outputs
-are skipped (so a job that hits its time limit can simply be resubmitted)
-unless --overwrite.
+and overwrites the previous files; changing only --n-reps adds or removes
+replicate files. With the same parameters, finished outputs are skipped (so a
+job that hits its time limit can simply be resubmitted) unless --overwrite.
 
 Example::
 
@@ -62,7 +62,8 @@ def main(argv=None):
                              "between mixing weights over one shared Gaussian mixture per side")
     parser.add_argument("--n-reps", type=int, default=10,
                         help="bootstrap replicates (the exact matrix of --method points is computed "
-                             "once in addition)")
+                             "once in addition); a later run with another count adds or removes "
+                             "replicate files and reclusters, nothing else is recomputed")
     parser.add_argument("--max-synapses", type=int, default=None,
                         help="[points] cap clouds above this many synapses by a uniform subsample "
                              "(default: none, every synapse is used; a pair of clouds of n synapses "
@@ -146,6 +147,9 @@ def main(argv=None):
                 args.dataset, side, points_per_half=args.validation_points_per_half,
                 outer_reps=args.validation_reps, params=params, overwrite=args.overwrite)
         if "distances" in args.stages:
+            # Replicates beyond --n-reps (and, after a parameter change, every old distance
+            # file) are deleted first, so Stage C sees exactly the requested replicates.
+            fresh = pipeline.prune_distances(args.dataset, side, args.n_reps, overwrite=args.overwrite)
             clouds = Clouds(clouds_path(args.dataset, side))
             shared_model = None
             if args.method == "shared":

@@ -11,14 +11,30 @@ script's options are called `--components-min`, `--components-max` and `--compon
 
 ## The fit and the choice of k
 
-The recipe is that of the Stage-1 cell-type model in `../mixture/src/modeling/mixture_all.py`:
+The recipe follows the Stage-1 cell-type model in `../mixture/src/modeling/mixture_all.py`:
 axes ordered (dx, dz, dy), synapses weighted by the border weight, at most `--max-synapses`
 synapses per repetition, a train/test split per repetition, every candidate k fitted on the
-training synapses and scored by the weighted BIC on the test synapses, and k chosen by
-`mix_helper.best_number_component`: the smallest k whose test BICs are not significantly
-different (paired Wilcoxon test) from those of the k with the lowest mean BIC. That test
-cannot reject with fewer than 6 repetitions, so `--repeats` must be at least 6 (`../mixture`
-uses 20 or 50; default 20).
+training synapses and scored on the test synapses, and k chosen by
+`mix_helper.best_number_component`: the smallest k whose held-out scores are not significantly
+different (paired Wilcoxon test, alpha 0.05) from those of the best k. That rule prefers
+simple models; it does not say the models are equivalent.
+
+One deliberate difference from `mixture_all`: the held-out score is, by default, the
+weight-normalised log-likelihood `sum(w log q) / sum(w)` (`--select-by loglik`) rather than
+the weighted BIC `p log(sum w) - 2 sum(w log q)` (`--select-by bic`). The BIC treats the
+border weights as replicate counts, so multiplying every weight by a constant changes which
+k it prefers, and on held-out data its parameter penalty comes on top of the overfitting that
+the held-out likelihood already punishes; the normalised log-likelihood has neither problem.
+Both scores are stored per candidate and repetition (`test_log_likelihood`, `test_bic`), and
+`select_by` is recorded in every selection.
+
+The paired test cannot reject with fewer than 6 pairs, so `--repeats` must be at least 6
+(`../mixture` uses 20 or 50; default 20). A fit can fail (EM on an unlucky subsample); a failed fit is a
+missing value, and the test runs only on candidates with at least 6 valid repetitions and
+on the repetitions valid for all of them, so a candidate that failed in most repetitions
+cannot win merely because its few surviving pairs cannot reject. The candidates set aside
+are recorded in the selection rule (`valid_repeats` lists the valid fits per candidate); a
+neuron with no usable candidate counts as a failed fit.
 
 `--covariance` picks the covariance form: `diagonal` (what `../mixture` uses for its
 relative-coordinate fits), `diagonal_constraint` (its cylindrical variant: one lateral centre
@@ -26,7 +42,7 @@ shared by all components, one lateral variance per component) or `normal` (full
 covariances).
 
 Neurons are selected like a pipeline run (`--n-neurons`, `--min-synapses`,
-`--min-border-distance`, `--seed`), so `<side>_neurons.csv` joins the pipeline's
+`--min-border-distance`, `--seed`), so `gmm/<side>/neurons.csv` joins the pipeline's
 `cluster_<side>/neurons.csv` on `pt_root_id`. Neurons are fitted in parallel over the allocated CPUs (each
 neuron's own fits run one after another), and the script logs the fitting plan (candidate k
 per neuron, EM fits per neuron) and then one line per finished neuron with its chosen k,
@@ -35,13 +51,15 @@ fitting time and the estimated time left.
 ### Which numbers of components to try
 
 Candidates are limited to k with at least `--min-synapses-per-parameter` (20) synapses per
-free parameter, as in `../mixture`; a diagonal k-component mixture has 7k - 1 parameters, so
-k = 2, 3, 4 need 260, 400, 540 synapses and k = 16 needs 2220. The default range is
+free parameter in the **training part** of a repetition (80% of the synapses used, so the
+guard holds for every fit that enters the selection, not only for the final fit on all of
+them), as in `../mixture`; a diagonal k-component mixture has 7k - 1 parameters, so k = 2,
+3, 4 need 325, 500, 675 synapses in the cloud and k = 16 needs 2775. The default range is
 `--components-min 1 --components-max 16 --components-step 3` (1, 4, 7, 10, 13, 16), chosen
 for dendrites: the median proofread dendrite has 2400 synapses and supports up to about
-k = 17, and `--components-step` keeps the cost of the wide range down. It is wrong for axons:
-the median proofread axon has 400 synapses, so under the default range two thirds of the
-axons have k = 1 as their only candidate (k = 4 needs 540). Run the axon side with
+k = 13, and `--components-step` keeps the cost of the wide range down. It is wrong for axons:
+the median proofread axon has 400 synapses, so under the default range most axons have
+k = 1 as their only candidate (k = 4 needs 675). Run the axon side with
 `--components-min 1 --components-max 4 --components-step 1` (`../mixture` tries 2 to 4 for
 clouds under 10k synapses). A cloud that supports none of the candidates is fitted with the
 smallest one and flagged `underpowered`.
@@ -60,8 +78,19 @@ and from each to the final model, the final model's total spread (root of
 `mixture_total_variance` summed over the axes, the RMS distance of a synapse from the
 mixture mean) so that `w2_within_rel` = median within-distance / spread is the instability
 relative to the cloud's size, and the median within-distance at every candidate k. The
-between-neuron scale comes from `--between-pairs` (2000) random pairs of neurons' final
-models.
+between-neuron scale comes from `--between-pairs` (2000) random pairs of neurons: `w2_repeat`
+compares one repeat model of each neuron, fitted exactly like the models behind the within
+distances (same training-subsample size, same EM procedure), and is the reference the summary
+and the figure use; `w2` compares the final models fitted on all synapses.
+
+What the within distance is and is not: it mixes three sources of variation at once, the
+training subsample, the EM start and the local optimum that start reaches, all at the chosen
+k; the uncertainty of the choice of k itself is not in it (`--reruns` covers that). It is
+therefore the instability of the fit, not a complete sampling uncertainty. The pairwise
+distances of one neuron (190 for 20 repeat models) share models and are not independent
+replicates, which is why only their median and maximum are reported. And a stable fit is not
+necessarily a good one: a neuron that always comes out as one wide Gaussian is perfectly
+stable and may be underfitted.
 
 `--reruns N` additionally reruns the whole selection N times per neuron with independent
 seeds (N times the fitting time) and compares the final models the same way, recording how
@@ -75,12 +104,13 @@ Two things to keep in mind when reading the distances:
   distance between the components, so for a neuron with well-separated components a small
   weight difference between two fits already gives a sizeable distance.
 - `GMMWeighted` starts EM once, from k random synapses as means and the global covariance
-  for every component, and can stop in a poor optimum (on a cloud with two separated depth
-  bands, about one start in six ends with both components wide and centred, far from the
-  other fits and with a lower log-likelihood). The rerun record keeps each final model's
-  log-likelihood so such cases can be told from genuine ambiguity, and `--starts N`
-  (default 1, as in `../mixture`) keeps the best of N EM starts per fit, which removes them
-  at N times the cost.
+  for every component, and a start can stop in a poor optimum (for example both components
+  wide and centred on a cloud with two separated depth bands, far from the other fits and
+  with a lower log-likelihood; how often this happens depends on the data and on the fitter,
+  whose `diagonal_constraint` M-step was corrected in `../mixture` on 2026-10-25). The rerun
+  record keeps each final model's log-likelihood so such cases can be told from genuine
+  ambiguity, and `--starts N` (default 1, as in `../mixture`) keeps the best of N EM starts
+  per fit, which removes them at N times the cost.
 
 ## Library API (`celltype/neuron_gmm.py`)
 
@@ -94,24 +124,24 @@ Two things to keep in mind when reading the distances:
   `save_stability`, `load_stability` for the repeat and rerun models.
 - The distances `gmm_w2(a, b, method)`, `within_distances`, `distances_to`,
   `total_spread` and `between_distances(fits, n_pairs)`.
+- The selection pieces `supported_k`, `usable_repeats` and `choose_k`.
 
 Component parameters keep the fitter's (dx, dz, dy) axis order.
 
-## Outputs (`gmm_output/`)
+## Outputs (`output/<dataset>/gmm/<side>/`)
 
-Outputs go to `gmm_output/`, a flat folder beside the pipeline's `output/` (both ignored by
-git). This is test code, so the files carry only the side as prefix and every run overwrites
-the previous one; the command and options are recorded in the summary.
+Outputs go to `output/<dataset>/gmm/<side>/`, beside the pipeline's `trials/`. Every run
+overwrites the previous one; the command and options are recorded in the summary.
 
 | File | Content |
 |---|---|
-| `<side>_neurons.csv` | per neuron: covariates, labels, chosen number of components (`n_components`), log-likelihood, BIC, spread, `w2_within_median`, `w2_within_max`, `w2_to_final_mean`, `spread_um`, `w2_within_rel`, `n_stability_models`, `w2_rerun_median`, `rerun_k_agreement` |
-| `<side>_models.json` | every final mixture (weights, means, covariances) with its k-selection and stability records |
-| `<side>_stability.json` | the repeat models at the chosen k and the rerun models of every neuron |
-| `<side>_between.csv` | W2 between the final models of random pairs of neurons |
-| `<side>_summary.json` | options, `n_components_counts`, medians, a `stability` block (within and between medians, their ratio, the fraction of neurons whose within-distance is below the 10th percentile of the between-distances, rerun agreement), failures, time |
-| `<side>_selection.png` | counts of the chosen number of components and the held-out BIC curve |
-| `<side>_stability.png` | within- vs between-neuron distances, within-distance vs synapse count and vs k |
+| `neurons.csv` | per neuron: covariates, labels, chosen number of components (`n_components`), log-likelihood, BIC, spread, `w2_within_median`, `w2_within_max`, `w2_to_final_mean`, `spread_um`, `w2_within_rel`, `n_stability_models`, `w2_rerun_median`, `rerun_k_agreement` |
+| `models.json` | every final mixture (weights, means, covariances) with its k-selection and stability records |
+| `stability.json` | the repeat models at the chosen k and the rerun models of every neuron |
+| `between.csv` | random pairs of neurons: W2 between the final models (`w2`) and between one repeat model of each (`w2_repeat`, matched to the within-neuron distances) |
+| `summary.json` | options, `n_components_counts`, medians, a `stability` block (within median, between median of the repeat models and of the final models, their ratio, the fraction of neurons whose within-distance is below the 10th percentile of the between-distances, rerun agreement), failures, time |
+| `selection.png` | counts of the chosen number of components and the held-out selection-score curve (the score of `--select-by`, relative to each neuron's best) |
+| `stability.png` | within- vs between-neuron distances, within-distance vs synapse count and vs k |
 
 ## Examples
 

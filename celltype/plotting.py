@@ -10,7 +10,7 @@ Figures for the Clustering Stage
 Cluster 0 (outliers: neurons left in clusters below the minimum size) is shown as "out".
 
 Per-neuron GMM figures (celltype/neuron_gmm.py):
-  gmm_selection  chosen number of components per neuron and the held-out BIC curve (relative to each neuron's best)
+  gmm_selection  chosen number of components per neuron and the held-out selection-score curve (relative to each neuron's best)
   gmm_stability  within-neuron vs between-neuron mixture Wasserstein distances, vs synapse count and k
 
 Split-half diagnostics (celltype/split_half.py):
@@ -312,7 +312,8 @@ def plot_covariates(table, labels, path):
 
 
 def plot_gmm_selection(fits, path):
-    """Chosen number of components per neuron and, per candidate number, the mean held-out BIC minus the neuron's lowest.
+    """Chosen number of components per neuron and, per candidate number, the mean held-out selection
+    score minus the neuron's lowest (lower is better: minus the normalised log-likelihood, or the BIC).
 
     ``fits`` are ``NeuronGMM`` objects (None entries skipped). The right panel
     shows the median and interquartile range over neurons; a flat curve means
@@ -327,12 +328,15 @@ def plot_gmm_selection(fits, path):
     axes[0].set_xlabel("chosen number of components")
     axes[0].set_ylabel("neurons")
 
-    relative = {}
+    relative, scores = {}, set()
     for fit in fits:
-        mean_bic = np.nanmean(np.asarray(fit.selection["test_bic"]), axis=1)
-        if np.all(np.isnan(mean_bic)):
+        select_by = fit.selection.get("select_by", "bic")
+        score = np.asarray(fit.selection["test_bic" if select_by == "bic" else "test_log_likelihood"], dtype=float)
+        mean_score = np.nanmean(score if select_by == "bic" else -score, axis=1)
+        if np.all(np.isnan(mean_score)):
             continue
-        for k, value in zip(fit.selection["candidates"], mean_bic - np.nanmin(mean_bic)):
+        scores.add(select_by)
+        for k, value in zip(fit.selection["candidates"], mean_score - np.nanmin(mean_score)):
             relative.setdefault(k, []).append(value)
     ks = sorted(relative)
     if ks:
@@ -340,8 +344,9 @@ def plot_gmm_selection(fits, path):
         axes[1].plot(ks, mid, marker="o", color="k")
         axes[1].fill_between(ks, low, high, alpha=0.25, color="0.5")
         axes[1].set_xticks(ks)
+    what = "held-out BIC" if scores == {"bic"} else "minus held-out log-likelihood per synapse"
     axes[1].set_xlabel("number of components")
-    axes[1].set_ylabel("held-out BIC minus the neuron's lowest")
+    axes[1].set_ylabel(f"{what}\nminus the neuron's lowest")
     axes[1].set_title("median and IQR over neurons", fontsize=9)
     fig.tight_layout()
     _save(fig, path)
@@ -352,8 +357,8 @@ def plot_gmm_stability(fits, between, path):
 
     Left: per neuron, the median mixture Wasserstein distance between its repeat
     fits (and, when reruns were made, between the reruns' final models) against
-    the distance between the final models of random pairs of neurons
-    (``between``, a sequence of distances). Middle: the within-neuron distance
+    the distance between one repeat fit of each neuron for random pairs of
+    neurons (``between``, a sequence of distances). Middle: the within-neuron distance
     against the number of synapses in the fit. Right: the within-neuron distance
     at every candidate k (median and IQR over neurons).
     """
@@ -364,7 +369,7 @@ def plot_gmm_stability(fits, between, path):
     between = np.asarray(between, dtype=float)
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
     series = [(within, "within neuron: repeat fits"), (rerun, "within neuron: reruns"),
-              (between, "between neurons")]
+              (between, "between neurons: repeat fits")]
     finite = [values[np.isfinite(values)] for values, _ in series]
     top = max((values.max() for values in finite if values.size), default=1.0)
     bins = np.linspace(0, top, 31)

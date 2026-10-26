@@ -13,14 +13,12 @@ Input tables are the ones used by the Stage-1 GMM fit in
   trials/dist_<side>/rep<b>.npz                  (Stage B, bootstrap replicates)
   trials/cluster_<side>/...                      (Stage C)
   split_half/<side>/                             (scripts/analyze_split_half.py)
+  gmm/<side>/                                    (scripts/fit_neuron_gmms.py; every run overwrites)
 
 One set of outputs per dataset. ``trials/config.json`` and the validation and
 split-half ``config.json`` files record the options that produced them; a
 later call with other options (or regenerated clouds) recomputes and
 overwrites the files, so outputs of different settings never mix.
-
-The per-neuron GMM analysis (scripts/fit_neuron_gmms.py, test code) writes
-flat files gmm_output/<side>_*.{csv,json,png}; every run overwrites the last.
 """
 
 from __future__ import annotations
@@ -34,7 +32,6 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MIXTURE_ROOT = PROJECT_ROOT.parent / "mixture"
 DATA_DIR = MIXTURE_ROOT / "microns_v1dd" / "sven"
 OUTPUT_ROOT = PROJECT_ROOT / "output"
-GMM_OUTPUT_ROOT = PROJECT_ROOT / "gmm_output"       # per-neuron GMM analysis, apart from the pipeline
 
 NM_TO_UM = 1.0 / 1000.0
 SIDES = ("axon", "dendrite")
@@ -96,9 +93,9 @@ def cluster_dir(dataset, side):
     return _ensure(trial_dir(dataset) / f"cluster_{side}")
 
 
-def gmm_dir():
-    """The flat folder of the per-neuron GMM analysis (``celltype/neuron_gmm.py``); runs overwrite each other."""
-    return _ensure(GMM_OUTPUT_ROOT)
+def gmm_dir(dataset, side):
+    """Outputs of ``scripts/fit_neuron_gmms.py`` for one side; every run overwrites the last."""
+    return _ensure(dataset_dir(dataset) / "gmm" / side)
 
 
 def split_half_dir(dataset, side):

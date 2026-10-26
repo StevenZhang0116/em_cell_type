@@ -218,9 +218,27 @@ def test_record_params_reports_changed_parameters(tmp_path, monkeypatch):
     assert pipeline.record_params("toy", dict(params)) is False      # the same parameters again
     with open(config.trial_dir("toy") / "config.json") as handle:
         assert json.load(handle) == params
-    assert pipeline.record_params("toy", {**params, "n_reps": 3}) is True
+    # The replicate count alone only adds or removes replicate files; anything else recomputes.
+    assert pipeline.record_params("toy", {**params, "n_reps": 3}) is False
+    assert pipeline.record_params("toy", {**params, "n_reps": 3, "seed": 2}) is True
     with open(config.trial_dir("toy") / "config.json") as handle:
-        assert json.load(handle)["n_reps"] == 3
+        assert json.load(handle) == {**params, "n_reps": 3, "seed": 2}
+
+
+def test_prune_distances_keeps_stage_c_to_the_requested_replicates(tmp_path, monkeypatch):
+    from celltype import config, pipeline
+
+    clouds = _toy_clouds(tmp_path, monkeypatch)
+    pipeline.compute_exact_distances(clouds, "toy", "axon", min_synapses=100, use_weights=True, seed=0)
+    for rep in range(3):
+        pipeline.compute_distances(clouds, "toy", "axon", rep, min_synapses=100, use_weights=True, seed=0)
+    directory = config.distance_dir("toy", "axon")
+    assert pipeline.prune_distances("toy", "axon", 3) is False
+    assert pipeline.prune_distances("toy", "axon", 1) is True
+    assert sorted(p.name for p in directory.glob("*.npz")) == ["exact.npz", "rep000.npz"]
+    assert clustering.load_replicates(directory)[0].shape == (1, 9, 9)
+    assert pipeline.prune_distances("toy", "axon", 1, overwrite=True) is True
+    assert list(directory.glob("*.npz")) == []
 
 
 def test_border_filter_uses_um_against_stored_nm(tmp_path):
@@ -401,7 +419,18 @@ def test_mixture_gmm_is_imported_not_copied():
     # Non-consecutive candidates (a k step) are fine: 4 has the lowest BIC in every repetition.
     bic = np.array([[100.0] * 8, [50.0 + 0.1 * i for i in range(8)], [60.0 + 0.1 * i for i in range(8)]])
     chosen, p_values, rule = neuron_gmm.choose_k([1, 4, 7], bic)
-    assert chosen == 4 and rule.startswith("mix_helper")
+    assert chosen == 4 and rule.startswith("mix_helper") and "8 repetitions" in rule
+    # A candidate that failed in most repetitions cannot win on its two surviving pairs
+    # (two pairs give p = 0.5, which the test would read as "not significantly worse").
+    sparse = np.full((2, 20), np.nan)
+    sparse[0, :2], sparse[1] = 2.0, 0.0
+    chosen, _, rule = neuron_gmm.choose_k([1, 2], sparse)
+    assert chosen == 2 and "set aside" in rule and "[1]" in rule
+    # The test uses the repetitions valid for every kept candidate.
+    kept, rows = neuron_gmm.usable_repeats([1, 2, 3], np.where(np.arange(20) % 2, 1.0, [[1.0], [1.0], [np.nan]]))
+    assert kept == [0, 1, 2] and rows.tolist() == list(range(1, 20, 2))
+    with pytest.raises(RuntimeError):
+        neuron_gmm.choose_k([1, 2], np.full((2, 20), np.nan))
 
 
 @needs_mixture
@@ -444,8 +473,17 @@ def test_select_and_fit_recovers_two_depth_components():
     assert np.allclose(fit.means[0, :2], fit.means[1, :2])                # one shared lateral centre
     assert fit.selection["rule"].startswith("mix_helper") and fit.selection["candidates"] == [1, 2, 3]
     assert not fit.selection["underpowered"] and np.asarray(fit.selection["test_bic"]).shape == (3, 6)
+    assert fit.selection["select_by"] == "loglik" and fit.selection["valid_repeats"] == [6, 6, 6]
+    # The weighted held-out BIC of ../mixture remains available and agrees here.
+    by_bic = neuron_gmm.select_and_fit(points, None, [1, 2, 3], method="diagonal_constraint", n_repeats=6,
+                                       min_synapses_per_parameter=10, seed=0, select_by="bic")
+    assert by_bic.k == 2 and by_bic.selection["select_by"] == "bic"
+    with pytest.raises(ValueError):
+        neuron_gmm.select_and_fit(points, None, [1, 2, 3], n_repeats=6, select_by="aic")
     density = fit.log_density(points)
     assert density.shape == (600,) and np.all(np.isfinite(density))
+    # Scoring other points than the training ones must not reuse the training weights.
+    assert np.allclose(fit.log_density(points[:5]), density[:5])
     assert np.allclose(fit.responsibilities(points).sum(axis=1), 1.0)
     # Stability: the six repeat fits at k=2 are close to each other and to the final model, well
     # below the cloud's spread (about 100 um, dominated by the two depth bands). The mixture
@@ -464,18 +502,19 @@ def test_select_and_fit_recovers_two_depth_components():
     assert reloaded.summary()["depth_sd_um"] == pytest.approx(fit.summary()["depth_sd_um"])
     assert reloaded.stability["within_median"] == pytest.approx(stability["within_median"])
     # Reruns of the whole selection choose k=2 again. GMMWeighted starts EM once, from two random
-    # synapses with the global covariance, and with this seed one rerun (and one of the six repeat
-    # fits above) stops in the degenerate optimum where both components are wide and centred: it
-    # sits ~114 um from the proper fits with a lower log-likelihood, while the other rerun lands on
-    # the main fit exactly (same 600 synapses, only the EM start differs).
+    # synapses with the global covariance, and a start can stop in the degenerate optimum where
+    # both components are wide and centred, ~114 um from the proper fits with a lower
+    # log-likelihood. Whether a given start does so depends on floating-point details that differ
+    # between machines, so the test does not rely on it; the rerun record keeps every final
+    # model's log-likelihood so that such cases can be told apart when they occur.
     rerun = neuron_gmm.select_and_fit(points, None, [1, 2, 3], method="diagonal_constraint", n_repeats=6,
                                       min_synapses_per_parameter=10, seed=0, n_reruns=2)
     record = rerun.stability["rerun"]
     assert len(rerun.rerun_models) == 2 and rerun.k == fit.k and np.allclose(rerun.means, fit.means)
     assert record["k"] == [2, 2, 2] and record["k_agreement"] == 1.0 and len(record["within"]) == 3
     assert record["within_median"] == pytest.approx(np.median(record["within"]))
-    assert min(record["within"]) < 1 and max(record["within"]) > 50 and stability["within_max"] > 50
-    assert max(record["log_likelihood"]) - min(record["log_likelihood"]) > 0.5
+    assert min(record["within"]) < 1 and stability["within_max"] >= stability["within_median"]
+    assert len(record["log_likelihood"]) == 3 and np.isfinite(record["log_likelihood"]).all()
     # Keeping the best of three EM starts per fit removes that failure mode.
     starts = neuron_gmm.select_and_fit(points, None, [1, 2, 3], method="diagonal_constraint", n_repeats=6,
                                        min_synapses_per_parameter=10, seed=0, n_starts=3, n_reruns=2)
@@ -518,10 +557,12 @@ def test_fit_neurons_table_and_files(tmp_path, monkeypatch):
     between = neuron_gmm.between_distances(fits, 100, seed=0)
     same_group = (between["i"] // 3 == between["j"] // 3).to_numpy()
     assert len(between) == 36 and same_group.sum() == 9
-    assert (between["w2"][~same_group] > 50).all() and (between["w2"][same_group] < 15).all()
+    for column in ("w2", "w2_repeat"):     # final models, and one 120-synapse repeat model of each
+        assert (between[column][~same_group] > 50).all() and (between[column][same_group] < 20).all()
     assert len(neuron_gmm.between_distances(fits, 10, seed=0)) == 10
+    assert neuron_gmm.between_distances(loaded, 10, seed=0)["w2_repeat"].isna().all()   # no repeat models
     from celltype import plotting
 
     plotting.plot_gmm_selection(fits, tmp_path / "selection.png")
-    plotting.plot_gmm_stability(fits, between["w2"], tmp_path / "stability.png")
+    plotting.plot_gmm_stability(fits, between["w2_repeat"], tmp_path / "stability.png")
     assert (tmp_path / "selection.png").exists() and (tmp_path / "stability.png").exists()

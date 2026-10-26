@@ -4,33 +4,36 @@ Fit a Gaussian Mixture to Every Selected Neuron, with Fitting Stability
 An analysis beside the pipeline: the weighted GMM of ../mixture
 (``GMMWeighted``, imported by celltype/neuron_gmm.py) is fitted to the
 soma-centred synapse cloud of each selected neuron, with the number of
-components chosen by held-out BIC as in ../mixture's cell-type model.
+components chosen on held-out synapses over repeated train/test splits (by
+the weight-normalised held-out log-likelihood, or with --select-by bic by the
+weighted BIC as in ../mixture's cell-type model).
 
 Because a cell-type model pools thousands of synapses while a single neuron
 has a few hundred, the stability of each neuron's fit is measured too: the
 models fitted at the chosen k during k selection (one per repetition, each on
 its own training subsample and EM start) are compared pairwise with the
 mixture Wasserstein distance of ../mixture (``component_ot_distance``), and
-the distance between the final models of random pairs of neurons gives the
-between-neuron scale to read them against. With --reruns N the whole
+the distance between one such repeat model of each neuron for random pairs of
+neurons gives the between-neuron scale to read them against. With --reruns N the whole
 selection is additionally rerun N times per neuron and the final models
 compared the same way (N times the fitting time).
 
 Neurons are selected exactly like a pipeline run (same --n-neurons,
 --min-synapses, --min-border-distance, --seed), so the outputs join
-the pipeline's cluster tables on pt_root_id. This is test code, so the outputs
-are flat files in gmm_output/ with the side as prefix, and every run
-overwrites the previous one (the options and command are in the summary):
+the pipeline's cluster tables on pt_root_id. Outputs go to
+output/<dataset>/gmm/<side>/, and every run overwrites the previous one (the
+options and command are in the summary):
 
-  <side>_neurons.csv    per neuron: covariates, labels, chosen number of components, log-likelihood,
-                        BIC, spread, within-neuron W2 (median, max, relative to the spread), rerun agreement
-  <side>_models.json    every final mixture (weights, means, covariances in (dx, dz, dy) order)
-                        with its selection and stability records
-  <side>_stability.json the repeat models at the chosen number of components (and rerun models)
-  <side>_between.csv    W2 between the final models of random pairs of neurons
-  <side>_summary.json   options, component counts, medians, stability summary, failures, time
-  <side>_selection.png  histogram of the chosen number of components and the held-out BIC curve
-  <side>_stability.png  within- vs between-neuron W2, W2 vs synapse count, W2 vs components
+  neurons.csv     per neuron: covariates, labels, chosen number of components, log-likelihood,
+                  BIC, spread, within-neuron W2 (median, max, relative to the spread), rerun agreement
+  models.json     every final mixture (weights, means, covariances in (dx, dz, dy) order)
+                  with its selection and stability records
+  stability.json  the repeat models at the chosen number of components (and rerun models)
+  between.csv     W2 between random pairs of neurons: final models (w2) and one repeat model
+                  of each (w2_repeat, matched to the within-neuron distances)
+  summary.json    options, component counts, medians, stability summary, failures, time
+  selection.png   histogram of the chosen number of components and the held-out selection-score curve
+  stability.png   within- vs between-neuron W2, W2 vs synapse count, W2 vs components
 
 "Components" throughout are the mixture components of one neuron's GMM
 (--components-min/--components-max/--components-step); the k of the clustering
@@ -72,14 +75,19 @@ def stability_report(table, between):
     fitted = table[table["n_components"].notna()]
     within = fitted["w2_within_median"].to_numpy(dtype=float)
     within = within[np.isfinite(within)]
+    # The between reference uses one repeat model per neuron (w2_repeat), fitted like the models
+    # behind the within distances; the final-model distances (w2) are reported beside it.
+    matched = between["w2_repeat"].to_numpy(dtype=float) if len(between) else np.array([])
+    matched = matched[np.isfinite(matched)]
     report = {"n_neurons_with_stability": int(within.size),
               "w2_within_median_um": _median(within),
               "w2_within_rel_median": _median(fitted["w2_within_rel"]),
               "w2_to_final_mean_median_um": _median(fitted["w2_to_final_mean"]),
               "n_between_pairs": int(len(between)),
-              "w2_between_median_um": _median(between["w2"]) if len(between) else None}
-    if within.size and len(between):
-        p10 = float(np.percentile(between["w2"], 10))
+              "w2_between_median_um": _median(matched),
+              "w2_between_final_median_um": _median(between["w2"]) if len(between) else None}
+    if within.size and matched.size:
+        p10 = float(np.percentile(matched, 10))
         report["within_between_ratio"] = report["w2_within_median_um"] / report["w2_between_median_um"]
         report["w2_between_p10_um"] = p10
         report["frac_neurons_within_below_between_p10"] = float(np.mean(within < p10))
@@ -108,6 +116,11 @@ def main():
     parser.add_argument("--covariance", choices=neuron_gmm.METHODS, default="diagonal",
                         help="GMMWeighted covariance form; diagonal is what ../mixture uses for its "
                              "relative-coordinate cell-type fits, diagonal_constraint its cylindrical variant")
+    parser.add_argument("--select-by", choices=neuron_gmm.SELECTION_SCORES, default="loglik",
+                        help="held-out score that chooses the number of components: loglik, the "
+                             "weight-normalised held-out log-likelihood (default), or bic, the weighted "
+                             "held-out BIC of ../mixture, whose preference depends on the scale of the "
+                             "border weights")
     parser.add_argument("--components-min", type=int, default=1,
                         help="smallest number of mixture components tried (../mixture tries 2 to 4 for "
                              "clouds under 10k synapses; the default 1-16 by 3 tries 1, 4, 7, 10, 13, 16, "
@@ -140,14 +153,13 @@ def main():
     args = parser.parse_args()
     start = time.time()
 
-    outdir = gmm_dir()
     k_values = list(range(args.components_min, args.components_max + 1, max(args.components_step, 1)))
     options = dict(method=args.covariance, n_repeats=args.repeats, max_synapses=args.max_synapses,
                    test_fraction=args.test_fraction,
                    min_synapses_per_parameter=args.min_synapses_per_parameter, n_starts=args.starts,
-                   n_reruns=args.reruns)
+                   n_reruns=args.reruns, select_by=args.select_by)
     n_jobs = allocated_cpus()
-    print(f"== Per-neuron GMMs: {outdir}; {n_jobs} CPUs")
+    print(f"== Per-neuron GMMs: {n_jobs} CPUs")
 
     for side in args.sides:
         path = clouds_path(args.dataset, side)
@@ -155,28 +167,29 @@ def main():
             sys.exit(f"{path} not found: extract the clouds first with "
                      f"'scripts/run_pipeline.py --dataset {args.dataset} --stages extract' "
                      "(Stage A, about 96 GB of memory for microns)")
+        outdir = gmm_dir(args.dataset, side)
         clouds = Clouds(path)
         indices = pipeline.select_neurons(clouds, args.min_synapses, args.n_neurons, args.seed,
                                           args.min_border_distance)
         print(f"== {side}: fitting {indices.size} neurons, components in {k_values}, covariance "
               f"{args.covariance}, {args.repeats} repeats, {args.starts} EM starts per fit, "
-              f"{args.reruns} reruns")
+              f"{args.reruns} reruns, selection by {args.select_by}")
         fits, errors = neuron_gmm.fit_neurons(clouds, indices, k_values, use_weights=not args.no_weights,
                                               n_jobs=n_jobs, seed=args.seed, log=print, **options)
         cell_ids = clouds.cell_ids[indices]
         table = neuron_gmm.fits_table(fits, clouds, indices)
-        table.to_csv(outdir / f"{side}_neurons.csv", index=False)
-        neuron_gmm.save_fits(outdir / f"{side}_models.json", fits, cell_ids,
+        table.to_csv(outdir / "neurons.csv", index=False)
+        neuron_gmm.save_fits(outdir / "models.json", fits, cell_ids,
                              {**options, "components": k_values, "use_weights": not args.no_weights,
                               "seed": args.seed})
-        neuron_gmm.save_stability(outdir / f"{side}_stability.json", fits, cell_ids)
-        plotting.plot_gmm_selection(fits, outdir / f"{side}_selection.png")
+        neuron_gmm.save_stability(outdir / "stability.json", fits, cell_ids)
+        plotting.plot_gmm_selection(fits, outdir / "selection.png")
 
         between = neuron_gmm.between_distances(fits, args.between_pairs, seed=args.seed)
         between.insert(0, "pt_root_id_b", cell_ids[between.pop("j").to_numpy(dtype=int)])
         between.insert(0, "pt_root_id_a", cell_ids[between.pop("i").to_numpy(dtype=int)])
-        between.to_csv(outdir / f"{side}_between.csv", index=False)
-        plotting.plot_gmm_stability(fits, between["w2"], outdir / f"{side}_stability.png")
+        between.to_csv(outdir / "between.csv", index=False)
+        plotting.plot_gmm_stability(fits, between["w2_repeat"], outdir / "stability.png")
 
         fitted = table[table["n_components"].notna()]
         summary = {
@@ -196,7 +209,7 @@ def main():
             "failures": errors,
             "elapsed_s": round(time.time() - start),
         }
-        with open(outdir / f"{side}_summary.json", "w") as handle:
+        with open(outdir / "summary.json", "w") as handle:
             json.dump(summary, handle, indent=2)
         print(json.dumps({key: summary[key] for key in
                           ("n_neurons", "n_fitted", "n_failed", "n_components_counts", "n_underpowered",
