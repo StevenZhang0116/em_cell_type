@@ -420,12 +420,13 @@ def test_mixture_gmm_is_imported_not_copied():
     bic = np.array([[100.0] * 8, [50.0 + 0.1 * i for i in range(8)], [60.0 + 0.1 * i for i in range(8)]])
     chosen, p_values, rule = neuron_gmm.choose_k([1, 4, 7], bic)
     assert chosen == 4 and rule.startswith("mix_helper") and "8 repetitions" in rule
-    # The tolerance accepts a smaller k whose mean score is within it of the lowest mean
-    # (means 100, 50.35, 60.35) although the paired test rejects; otherwise the test's choice stands.
-    chosen, _, rule = neuron_gmm.choose_k([1, 4, 7], bic, tolerance=60)
-    assert chosen == 1 and "chosen by tolerance 60" in rule and "the test chose k=4" in rule
+    # With a tolerance the smallest k whose mean score is within it of the lowest mean (means
+    # 100, 50.35, 60.35) is chosen, whatever the paired test says; the test stays as a diagnostic.
+    chosen, p_values, rule = neuron_gmm.choose_k([1, 4, 7], bic, tolerance=60)
+    assert chosen == 1 and rule.startswith("tolerance 60") and "would choose k=4" in rule
+    assert p_values is not None
     chosen, _, rule = neuron_gmm.choose_k([1, 4, 7], bic, tolerance=5)
-    assert chosen == 4 and "does not choose a smaller k" in rule
+    assert chosen == 4 and rule.startswith("tolerance 5")
     with pytest.raises(ValueError):
         neuron_gmm.choose_k([1, 4, 7], bic, tolerance=-1)
     # A score that keeps improving by a significant but small step: the test takes the largest
@@ -433,6 +434,13 @@ def test_mixture_gmm_is_imported_not_copied():
     steady = np.array([[3.0], [2.0], [1.0]]) + 0.01 * np.arange(8) * np.array([[1], [2], [3]])
     assert neuron_gmm.choose_k([1, 2, 3], steady)[0] == 3
     assert neuron_gmm.choose_k([1, 2, 3], steady, tolerance=1.5)[0] == 2
+    # The test accepting a simpler model is not a small loss: k=1 loses 0.2 on average with a
+    # spread 8 pairs cannot resolve, so the test alone takes k=1; the tolerance 0.1 takes k=2
+    # (mean loss 0.05), not the simpler of the two choices.
+    noisy = np.array([[0.2 + d for d in (0.7, -0.7) * 4], [0.05 + d for d in (0.3, -0.3) * 4], [0.0] * 8])
+    by_test, p_values, _ = neuron_gmm.choose_k([1, 2, 3], noisy)
+    assert by_test == 1 and p_values[0] > 0.05
+    assert neuron_gmm.choose_k([1, 2, 3], noisy, tolerance=0.1)[0] == 2
     # A candidate that failed in most repetitions cannot win on its two surviving pairs
     # (two pairs give p = 0.5, which the test would read as "not significantly worse").
     sparse = np.full((2, 20), np.nan)

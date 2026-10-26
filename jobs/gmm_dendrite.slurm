@@ -19,8 +19,10 @@
 # model, so all neurons have the same candidates), 30 train/test repetitions
 # per neuron, best of 3 EM starts per fit, the number of components chosen by
 # the weight-normalised held-out log-likelihood with a tolerance of 0.1 nats
-# per synapse: the smallest k within 0.1 of the best candidate's mean held-out
-# log-likelihood. Without the tolerance every dendrite of the diagonal pilot
+# per synapse: the smallest k whose mean held-out log-likelihood over the
+# repetitions is within 0.1 of the best candidate's (an estimated mean loss,
+# not a population bound; the paired test of ../mixture is only recorded as a
+# diagnostic). Without the tolerance every dendrite of the diagonal pilot
 # chose the largest candidate it was allowed (the held-out log-likelihood
 # never plateaus); the value is a resolution choice, re-check it on the stored
 # curves (models.json) after the run. 10000 random pairs of neurons give the

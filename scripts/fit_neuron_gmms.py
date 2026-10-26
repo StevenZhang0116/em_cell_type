@@ -6,9 +6,10 @@ An analysis beside the pipeline: the weighted GMM of ../mixture
 soma-centred synapse cloud of each selected neuron, with the number of
 components chosen on held-out synapses over repeated train/test splits (by
 the weight-normalised held-out log-likelihood, or with --select-by bic by the
-weighted BIC as in ../mixture's cell-type model; --select-tolerance adds the
-effect-size side of the rule, accepting the smallest number of components
-whose mean held-out score is within the tolerance of the best candidate's).
+weighted BIC as in ../mixture's cell-type model; --select-tolerance replaces
+the paired test by an effect-size rule, the smallest number of components
+whose mean held-out score is within the tolerance of the best candidate's,
+and keeps the test as a diagnostic).
 
 Because a cell-type model pools thousands of synapses while a single neuron
 has a few hundred, the stability of each neuron's fit is measured too: the
@@ -126,11 +127,12 @@ def main():
                              "held-out BIC of ../mixture, whose preference depends on the scale of the "
                              "border weights")
     parser.add_argument("--select-tolerance", type=float, default=0.0,
-                        help="effect-size rule beside the paired test: the smallest number of components "
-                             "whose mean held-out score is within this much of the best candidate's is "
-                             "chosen too, in the units of --select-by (nats per synapse for loglik, BIC "
-                             "units for bic); 0 keeps the significance test alone, which chooses the "
-                             "largest candidate on a cloud whose held-out score never plateaus")
+                        help="replaces the paired test by an effect-size rule: the smallest number of "
+                             "components whose mean held-out score is within this much of the best "
+                             "candidate's, in the units of --select-by (nats per synapse for loglik, BIC "
+                             "units for bic); the test's choice stays in the record as a diagnostic. "
+                             "0 (default) keeps the test alone, which chooses the largest candidate on a "
+                             "cloud whose held-out score never plateaus")
     parser.add_argument("--components-min", type=int, default=1,
                         help="smallest number of mixture components tried (../mixture tries 2 to 4 for "
                              "clouds under 10k synapses; the default 1-16 by 3 tries 1, 4, 7, 10, 13, 16). "

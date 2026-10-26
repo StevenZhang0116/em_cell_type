@@ -36,12 +36,18 @@ cannot win merely because its few surviving pairs cannot reject. The candidates 
 are recorded in the selection rule (`valid_repeats` lists the valid fits per candidate); a
 neuron with no usable candidate counts as a failed fit.
 
-`--select-tolerance` adds the effect-size side of the rule: the smallest k whose mean held-out
-score (over the same repetitions) is within the tolerance of the best candidate's mean is chosen
-when it is smaller than the test's choice. The tolerance is in the units of `--select-by`, nats
-per synapse for `loglik` and BIC units for `bic`; the selection record keeps `select_tolerance`
-and its rule says what the tolerance did, and `selection.png` draws it as a line on the score
-curve. It exists because significance alone does not stop on a dendrite. In a 200-dendrite pilot
+`--select-tolerance` replaces the paired test by an effect-size rule: the smallest k whose mean
+held-out score (over the same repetitions) is within the tolerance of the best candidate's mean.
+The tolerance is in the units of `--select-by`, nats per synapse for `loglik` and BIC units for
+`bic`; the selection record keeps `select_tolerance`, its rule names the tolerance's choice and,
+as a diagnostic, what the test alone would have chosen (the p-values are kept too), and
+`selection.png` draws the tolerance as a line on the score curve. The two rules are not combined:
+the test accepting a simpler model says only that the repetitions cannot tell it from the best,
+not that its loss is small, so taking the simpler of the two choices would let a model whose loss
+exceeds the tolerance through whenever the test lacks power. The bound is on the mean loss
+estimated over the repetitions (standard error about 0.015 nats per synapse with 20 to 30
+repetitions and the pilot's spread), not a bound for the population. The rule exists because
+significance alone does not stop on a dendrite. In a 200-dendrite pilot
 with the diagonal model (20 repetitions, 3 starts, k = 1, 4, ..., 16) the held-out log-likelihood
 rose by 0.56, 0.25, 0.20, 0.16 and 0.13 nats per synapse at the successive 3-component steps
 (medians over neurons, positive for every neuron) against a spread over repetitions of about

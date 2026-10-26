@@ -26,12 +26,15 @@ with the recipe of the Stage-1 cell-type model in
    that score: the smallest k whose held-out scores are not significantly
    different (paired Wilcoxon, alpha 0.05) from those of the best k. This is
    a rule that prefers simple models, not a statement that the models are
-   equivalent. ``select_tolerance > 0`` adds the effect-size side of the rule:
-   the smallest k whose mean score is within that much of the best
-   candidate's mean is accepted as well. With thousands of synapses every
-   extra component is significant, so on a cloud whose held-out score never
-   plateaus (a dendrite) the test alone chooses the largest candidate and the
-   tolerance decides. The test cannot reject with fewer than 6 pairs, so
+   equivalent. ``select_tolerance > 0`` replaces the test by an effect-size
+   rule: the smallest k whose mean score is within that much of the best
+   candidate's mean; the test's choice and p-values stay in the record as a
+   diagnostic. With thousands of synapses every extra component is
+   significant, so on a cloud whose held-out score never plateaus (a
+   dendrite) the test alone chooses the largest candidate. The two rules are
+   not combined: the test accepting a simpler model says only that the
+   repetitions cannot tell it from the best, not that its loss is small. The
+   test cannot reject with fewer than 6 pairs, so
    ``n_repeats`` must be at least ``MIN_REPEATS``, and the test runs only on
    candidates with that many valid fits, on the repetitions valid for all of
    them (``usable_repeats``): a candidate that failed in most repetitions
@@ -427,12 +430,12 @@ def choose_k(candidates, scores, tolerance=0.0):
     (``usable_repeats``), so a candidate that failed in most repetitions cannot
     win merely because its few surviving pairs cannot reject. Falls back to the
     lowest mean score if the test cannot be run (e.g. identical scores).
-    ``tolerance > 0`` adds the effect-size side of the rule: when the smallest
+    ``tolerance > 0`` replaces the test by the effect-size rule: the smallest
     candidate whose mean score (over the same repetitions) is within
-    ``tolerance`` of the lowest mean is smaller than the test's choice, it is
-    chosen instead; the units are those of ``scores``. The returned rule
-    records the fallback, the candidates set aside and what the tolerance did;
-    with no usable candidate the neuron's fit fails.
+    ``tolerance`` of the lowest mean is chosen, in the units of ``scores``;
+    the test's choice is then named in the rule and its p-values returned as
+    a diagnostic. The returned rule also records the fallback and the
+    candidates set aside; with no usable candidate the neuron's fit fails.
     """
     mix_helper = mixture_modules().mix_helper
     scores = np.asarray(scores, dtype=float)
@@ -452,22 +455,18 @@ def choose_k(candidates, scores, tolerance=0.0):
     lowest = kept_k[int(np.argmin(means))]
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            chosen, p_values = mix_helper.best_number_component(kept_k, usable, method="ordinal")
-        if int(chosen) not in kept_k:      # its placeholder 3 when no index was found
-            raise ValueError(f"best_number_component returned k={chosen}, not a candidate")
-        chosen, rule = int(chosen), f"mix_helper.best_number_component(ordinal) on {rows.size} repetitions"
+            by_test, p_values = mix_helper.best_number_component(kept_k, usable, method="ordinal")
+        if int(by_test) not in kept_k:      # its placeholder 3 when no index was found
+            raise ValueError(f"best_number_component returned k={by_test}, not a candidate")
+        by_test, test_rule = int(by_test), f"mix_helper.best_number_component(ordinal) on {rows.size} repetitions"
     except ValueError as error:
-        chosen, p_values, rule = lowest, None, f"lowest mean held-out score ({error})"
-    if tolerance > 0:
-        within = min(k for k, mean in zip(kept_k, means) if mean - means.min() <= tolerance)
-        if within < chosen:
-            rule += (f"; chosen by tolerance {tolerance:g}: k={within} is the smallest whose mean score is "
-                     f"within it of the lowest mean (k={lowest}), the test chose k={chosen}")
-            chosen = within
-        else:
-            rule += (f"; tolerance {tolerance:g} does not choose a smaller k (smallest within it of the "
-                     f"lowest mean k={lowest}: k={within})")
-    return chosen, p_values, rule + note
+        by_test, p_values, test_rule = lowest, None, f"lowest mean held-out score ({error})"
+    if tolerance <= 0:
+        return by_test, p_values, test_rule + note
+    within = min(k for k, mean in zip(kept_k, means) if mean - means.min() <= tolerance)
+    rule = (f"tolerance {tolerance:g}: k={within} is the smallest whose mean held-out score is within it "
+            f"of the lowest mean (k={lowest}); as a diagnostic, {test_rule} would choose k={by_test}")
+    return within, p_values, rule + note
 
 
 def _select_once(arranged, weight, k_values, rng, method, n_repeats, max_synapses, test_fraction,
@@ -525,8 +524,8 @@ def select_and_fit(points, weight, k_values, *, method="diagonal", n_repeats=20,
     weights (None: uniform). ``select_by`` is the held-out score of the
     selection, ``"loglik"`` (weight-normalised log-likelihood, default) or
     ``"bic"`` (the weighted BIC of ``mixture_all``, see the module docstring),
-    and ``select_tolerance`` the effect-size side of the selection rule in the
-    units of that score (``choose_k``; 0 keeps the significance test alone).
+    and ``select_tolerance > 0`` replaces the paired test by the effect-size
+    rule of ``choose_k``, in the units of that score (0 keeps the test).
     ``mixture_all`` uses 20 repetitions for cell-type
     fits and 50 for single-cell fits. ``n_starts`` EM starts per fit (see
     ``fit_once``; 1 as in ``mixture_all``). ``n_reruns`` extra, independently seeded
