@@ -120,6 +120,27 @@ def prune_distances(dataset, side, n_reps, overwrite=False):
     return bool(stale)
 
 
+def cluster_is_current(dataset, side, params):
+    """True when Stage C's summary was computed with ``params`` from the replicate files now present.
+
+    ``run_pipeline`` skips Stage C on this condition only. The summary records
+    the parameters of its run (``run``) and how many replicates it clustered
+    (``n_replicates``); a run of Stage B alone may since have pruned or added
+    replicate files (``--n-reps`` alone leaves ``trials/config.json`` as it
+    is), and then the summary is stale although it exists.
+    """
+    path = cluster_dir(dataset, side) / "summary.json"
+    if not path.exists():
+        return False
+    with open(path) as handle:
+        summary = json.load(handle)
+    run = summary.get("run", {})
+    if any(run.get(key) != value for key, value in params.items()):
+        return False
+    present = len(list(distance_dir(dataset, side).glob("rep*.npz")))
+    return summary.get("n_replicates") == present
+
+
 def validate_neurons(dataset, side, *, points_per_half, outer_reps, params, overwrite=False):
     """Optional validation stage, on exactly the full pipeline's selected cohort."""
     if params["method"] != "points":

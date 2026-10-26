@@ -59,8 +59,9 @@ $PYTHON -u scripts/run_pipeline.py --sides dendrite --stages validate --n-neuron
 All outputs of a dataset live in `output/<dataset>/trials/`, one set per dataset; its
 `config.json` records the Stage B and C parameters of the last run. A run with other
 parameters recomputes the stages it runs and overwrites the previous files (changing only
-`--n-reps` adds or removes replicate files); with the same parameters, finished stages are
-skipped unless `--overwrite`.
+`--n-reps` adds or removes replicate files, and Stage C reruns when its summary was not made
+from the replicate files present); with the same parameters, finished stages are skipped
+unless `--overwrite`.
 
 ## Layout
 
@@ -79,7 +80,7 @@ celltype/    library code (no command-line parsing)
 scripts/     run_pipeline.py, fit_neuron_gmms.py, analyze_split_half.py
 docs/        pipeline.md, neuron_gmm.md, split_half.md, split_cluster.md
 tests/       pytest unit tests
-jobs/        env.sh (job environment: conda env, 1 BLAS thread) and the Slurm scripts (unit tests, dendrite validation, dendrite GMMs)
+jobs/        env.sh (job environment: conda env, 1 BLAS thread) and the Slurm scripts (unit tests, dendrite pipeline with validation, dendrite GMMs)
 output/      outputs per dataset (clouds, trials, split_half, gmm); ignored by git
 log/         Slurm logs; ignored by git
 ```

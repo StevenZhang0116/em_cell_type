@@ -25,7 +25,10 @@ with other parameters recomputes the stages it runs and overwrites the previous 
 files of different settings never mix. With the same parameters, finished outputs are
 skipped unless `--overwrite`. `--n-reps` is the exception: a replicate depends only on the
 seed and its index, so a smaller count deletes the replicate files beyond it and a larger
-one adds the missing ones, and Stage C runs again on exactly the requested replicates.
+one adds the missing ones, and Stage C runs again on exactly the requested replicates. Stage C
+is skipped only when its `summary.json` was computed with the same parameters from the
+replicate files now present (`pipeline.cluster_is_current`), so pruning or adding replicates
+in one run and clustering in a later one still reclusters.
 
 - `--sides` takes one or both sides (default: both).
 - `--max-synapses N` (points method; default none) caps clouds above N synapses by a uniform

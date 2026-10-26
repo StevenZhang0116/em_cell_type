@@ -10,8 +10,10 @@ Everything except the clouds is written to output/<dataset>/trials/, one set
 of outputs per dataset; its config.json records the Stage B and C parameters
 of the last run. A run with other parameters recomputes the stages it runs
 and overwrites the previous files; changing only --n-reps adds or removes
-replicate files. With the same parameters, finished outputs are skipped (so a
-job that hits its time limit can simply be resubmitted) unless --overwrite.
+replicate files, and Stage C runs again whenever its summary was not made from
+the replicate files present. With the same parameters, finished outputs are
+skipped (so a job that hits its time limit can simply be resubmitted) unless
+--overwrite.
 
 Example::
 
@@ -35,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from celltype import pipeline
 from celltype.clouds import Clouds
-from celltype.config import DATASETS, SIDES, cluster_dir, clouds_path, distance_dir
+from celltype.config import DATASETS, SIDES, clouds_path, distance_dir
 
 
 STAGES = ("extract", "validate", "distances", "cluster")
@@ -178,9 +180,10 @@ def main(argv=None):
                 fresh = True
 
         if "cluster" in args.stages:
-            summary = cluster_dir(args.dataset, side) / "summary.json"
-            if summary.exists() and not (fresh or args.overwrite):
-                print(f"== Stage C: {side} already clustered")
+            # Skipped only when the summary was made with these parameters from the replicate
+            # files now present; a Stage-B-only run in between may have pruned or added some.
+            if not (fresh or args.overwrite) and pipeline.cluster_is_current(args.dataset, side, params):
+                print(f"== Stage C: {side} already clustered from the present replicates")
             else:
                 print(f"== Stage C: {side}")
                 pipeline.cluster_neurons(

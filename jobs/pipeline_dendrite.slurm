@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=validate_dendrite
+#SBATCH --job-name=pipeline_dendrite
 #SBATCH --account=amath
 #SBATCH --partition=cpu-g2
 #SBATCH --nodes=1
@@ -7,9 +7,9 @@
 #SBATCH --cpus-per-task=40
 #SBATCH --mem=64G
 #SBATCH --time=20:00:00
-#SBATCH --output=log/validate_dendrite.txt
+#SBATCH --output=log/pipeline_dendrite.txt
 #SBATCH --open-mode=append
-# Dendrite side, 200 neurons with >= 2000 synapses: split-half validation
+# The dendrite pipeline on 200 neurons with >= 2000 synapses: split-half validation
 # (docs/split_cluster.md: halves of 500 synapses, 20 outer splits, 50 inner
 # bootstrap replicates per half), then Stage B (exact W2 of the complete clouds
 # plus 50 bootstrap replicates) and Stage C (consensus clustering) on the same
@@ -24,11 +24,11 @@
 # replicate in trials/dist_dendrite/, so if the job runs out of time, submit
 # it again and it continues where it stopped.
 #
-#   sbatch jobs/validate_dendrite.slurm
+#   sbatch jobs/pipeline_dendrite.slurm
 #
 # When cpu-g2 is blocked by the group quota (AssocGrpCpuLimit), the checkpoint
 # partition works too; a preempted job is simply resubmitted:
-#   sbatch --account=ckpt-amath --partition=ckpt --qos=ckpt jobs/validate_dendrite.slurm
+#   sbatch --account=ckpt-amath --partition=ckpt --qos=ckpt jobs/pipeline_dendrite.slurm
 set -euo pipefail
 source jobs/env.sh
 echo "== $(date) job $SLURM_JOB_ID on $(hostname), $SLURM_CPUS_PER_TASK CPUs"

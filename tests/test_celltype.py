@@ -241,6 +241,32 @@ def test_prune_distances_keeps_stage_c_to_the_requested_replicates(tmp_path, mon
     assert list(directory.glob("*.npz")) == []
 
 
+def test_cluster_is_current_tracks_parameters_and_replicate_files(tmp_path, monkeypatch):
+    """Stage C is skipped only when its summary was made with the same parameters from the present replicates."""
+    from celltype import config, pipeline
+
+    monkeypatch.setattr(config, "OUTPUT_ROOT", tmp_path)
+    params = {"method": "points", "n_reps": 2, "k": None, "min_border": 50.0}
+    distances = config.distance_dir("toy", "axon")
+    distances.mkdir(parents=True, exist_ok=True)
+    for rep in range(2):
+        np.savez(distances / f"rep{rep:03d}.npz", eligible=np.arange(3))
+    assert pipeline.cluster_is_current("toy", "axon", params) is False       # no summary yet
+    outdir = config.cluster_dir("toy", "axon")
+    outdir.mkdir(parents=True, exist_ok=True)
+    with open(outdir / "summary.json", "w") as handle:
+        json.dump({"run": {"dataset": "toy", "side": "axon", **params}, "n_replicates": 2}, handle)
+    assert pipeline.cluster_is_current("toy", "axon", params) is True
+    assert pipeline.cluster_is_current("toy", "axon", {**params, "k": 3}) is False
+    assert pipeline.cluster_is_current("toy", "axon", {**params, "n_reps": 1}) is False
+    # A Stage-B-only run pruned, then added, replicates: the summary no longer matches the files.
+    (distances / "rep001.npz").unlink()
+    assert pipeline.cluster_is_current("toy", "axon", params) is False
+    for rep in (1, 2):
+        np.savez(distances / f"rep{rep:03d}.npz", eligible=np.arange(3))
+    assert pipeline.cluster_is_current("toy", "axon", params) is False
+
+
 def test_border_filter_uses_um_against_stored_nm(tmp_path):
     n = 120
     np.savez(tmp_path / "clouds.npz", cell_ids=np.arange(3), offsets=np.arange(4) * n,
