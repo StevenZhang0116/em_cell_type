@@ -28,7 +28,7 @@ significance tests for discrete cell types.
 
 - [docs/pipeline.md](docs/pipeline.md): Stages A to C, outputs and options, the two
   distance methods and their cost, Stage C outputs.
-- [docs/neuron_gmm.md](docs/neuron_gmm.md): per-neuron GMMs, which k to try, fitting
+- [docs/neuron_gmm.md](docs/neuron_gmm.md): per-neuron GMMs, which k to try, the selection rule, fitting
   stability, outputs.
 - [docs/split_half.md](docs/split_half.md): disjoint halves, matched sample sizes,
   fixed-cohort comparisons, outputs and statistical limits.
@@ -79,7 +79,7 @@ celltype/    library code (no command-line parsing)
 scripts/     run_pipeline.py, fit_neuron_gmms.py, analyze_split_half.py
 docs/        pipeline.md, neuron_gmm.md, split_half.md, split_cluster.md
 tests/       pytest unit tests
-jobs/        env.sh (job environment: conda env, 1 BLAS thread), the unit-test and validation Slurm scripts
+jobs/        env.sh (job environment: conda env, 1 BLAS thread) and the Slurm scripts (unit tests, dendrite validation, dendrite GMMs)
 output/      outputs per dataset (clouds, trials, split_half, gmm); ignored by git
 log/         Slurm logs; ignored by git
 ```

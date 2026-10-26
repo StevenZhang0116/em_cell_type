@@ -6,7 +6,9 @@ An analysis beside the pipeline: the weighted GMM of ../mixture
 soma-centred synapse cloud of each selected neuron, with the number of
 components chosen on held-out synapses over repeated train/test splits (by
 the weight-normalised held-out log-likelihood, or with --select-by bic by the
-weighted BIC as in ../mixture's cell-type model).
+weighted BIC as in ../mixture's cell-type model; --select-tolerance adds the
+effect-size side of the rule, accepting the smallest number of components
+whose mean held-out score is within the tolerance of the best candidate's).
 
 Because a cell-type model pools thousands of synapses while a single neuron
 has a few hundred, the stability of each neuron's fit is measured too: the
@@ -33,6 +35,7 @@ options and command are in the summary):
                   of each (w2_repeat, matched to the within-neuron distances)
   summary.json    options, component counts, medians, stability summary, failures, time
   selection.png   histogram of the chosen number of components and the held-out selection-score curve
+                  (with the selection tolerance as a line when one was used)
   stability.png   within- vs between-neuron W2, W2 vs synapse count, W2 vs components
 
 "Components" throughout are the mixture components of one neuron's GMM
@@ -43,6 +46,7 @@ Example::
 
     python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 1000 --components-max 4 --components-step 1 --min-border-distance 100
     python -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --covariance diagonal_constraint
+    python -u scripts/fit_neuron_gmms.py --sides dendrite --min-synapses 2000 --covariance diagonal_constraint --components-max 19 --components-step 2 --select-tolerance 0.1
     python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 50 --components-min 2 --components-max 4 --components-step 1 --repeats 6
     python -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 100 --reruns 5
 """
@@ -121,13 +125,24 @@ def main():
                              "weight-normalised held-out log-likelihood (default), or bic, the weighted "
                              "held-out BIC of ../mixture, whose preference depends on the scale of the "
                              "border weights")
+    parser.add_argument("--select-tolerance", type=float, default=0.0,
+                        help="effect-size rule beside the paired test: the smallest number of components "
+                             "whose mean held-out score is within this much of the best candidate's is "
+                             "chosen too, in the units of --select-by (nats per synapse for loglik, BIC "
+                             "units for bic); 0 keeps the significance test alone, which chooses the "
+                             "largest candidate on a cloud whose held-out score never plateaus")
     parser.add_argument("--components-min", type=int, default=1,
                         help="smallest number of mixture components tried (../mixture tries 2 to 4 for "
-                             "clouds under 10k synapses; the default 1-16 by 3 tries 1, 4, 7, 10, 13, 16, "
-                             "which suits dendrites; axons with a few hundred synapses support only 2-4 "
-                             "components at 20 synapses per parameter, so use --components-max 4 "
-                             "--components-step 1 for them)")
-    parser.add_argument("--components-max", type=int, default=16)
+                             "clouds under 10k synapses; the default 1-16 by 3 tries 1, 4, 7, 10, 13, 16). "
+                             "Which candidates a cloud supports depends on --covariance and the "
+                             "synapses-per-parameter guard (table in docs/neuron_gmm.md): axons with a few "
+                             "hundred synapses support only 2-4 diagonal components, so use "
+                             "--components-max 4 --components-step 1 for them; a 2000-synapse dendrite "
+                             "supports 11 diagonal or 19 diagonal_constraint components")
+    parser.add_argument("--components-max", type=int, default=16,
+                        help="largest number of components tried; a neuron's chosen number cannot exceed "
+                             "it, so when the held-out score never plateaus (dendrites) the choice is "
+                             "this ceiling unless --select-tolerance stops it earlier")
     parser.add_argument("--components-step", type=int, default=3,
                         help="try every components-step-th value from --components-min to --components-max")
     parser.add_argument("--repeats", type=int, default=20,
@@ -157,7 +172,7 @@ def main():
     options = dict(method=args.covariance, n_repeats=args.repeats, max_synapses=args.max_synapses,
                    test_fraction=args.test_fraction,
                    min_synapses_per_parameter=args.min_synapses_per_parameter, n_starts=args.starts,
-                   n_reruns=args.reruns, select_by=args.select_by)
+                   n_reruns=args.reruns, select_by=args.select_by, select_tolerance=args.select_tolerance)
     n_jobs = allocated_cpus()
     print(f"== Per-neuron GMMs: {n_jobs} CPUs")
 
@@ -173,7 +188,7 @@ def main():
                                           args.min_border_distance)
         print(f"== {side}: fitting {indices.size} neurons, components in {k_values}, covariance "
               f"{args.covariance}, {args.repeats} repeats, {args.starts} EM starts per fit, "
-              f"{args.reruns} reruns, selection by {args.select_by}")
+              f"{args.reruns} reruns, selection by {args.select_by} with tolerance {args.select_tolerance:g}")
         fits, errors = neuron_gmm.fit_neurons(clouds, indices, k_values, use_weights=not args.no_weights,
                                               n_jobs=n_jobs, seed=args.seed, log=print, **options)
         cell_ids = clouds.cell_ids[indices]

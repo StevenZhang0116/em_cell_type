@@ -26,7 +26,12 @@ with the recipe of the Stage-1 cell-type model in
    that score: the smallest k whose held-out scores are not significantly
    different (paired Wilcoxon, alpha 0.05) from those of the best k. This is
    a rule that prefers simple models, not a statement that the models are
-   equivalent. The test cannot reject with fewer than 6 pairs, so
+   equivalent. ``select_tolerance > 0`` adds the effect-size side of the rule:
+   the smallest k whose mean score is within that much of the best
+   candidate's mean is accepted as well. With thousands of synapses every
+   extra component is significant, so on a cloud whose held-out score never
+   plateaus (a dendrite) the test alone chooses the largest candidate and the
+   tolerance decides. The test cannot reject with fewer than 6 pairs, so
    ``n_repeats`` must be at least ``MIN_REPEATS``, and the test runs only on
    candidates with that many valid fits, on the repetitions valid for all of
    them (``usable_repeats``): a candidate that failed in most repetitions
@@ -413,7 +418,7 @@ def usable_repeats(candidates, scores):
     return [], np.array([], dtype=int)
 
 
-def choose_k(candidates, scores):
+def choose_k(candidates, scores, tolerance=0.0):
     """k by ``mix_helper.best_number_component`` on a (candidates, repeats) score matrix, plus p-values.
 
     ``scores`` are held-out scores where lower is better (minus the normalised
@@ -421,12 +426,18 @@ def choose_k(candidates, scores):
     runs only on the candidates and repetitions with enough valid fits
     (``usable_repeats``), so a candidate that failed in most repetitions cannot
     win merely because its few surviving pairs cannot reject. Falls back to the
-    lowest mean score if the test cannot be run (e.g. identical scores). The
-    returned rule records the fallback and the candidates set aside; with no
-    usable candidate the neuron's fit fails.
+    lowest mean score if the test cannot be run (e.g. identical scores).
+    ``tolerance > 0`` adds the effect-size side of the rule: when the smallest
+    candidate whose mean score (over the same repetitions) is within
+    ``tolerance`` of the lowest mean is smaller than the test's choice, it is
+    chosen instead; the units are those of ``scores``. The returned rule
+    records the fallback, the candidates set aside and what the tolerance did;
+    with no usable candidate the neuron's fit fails.
     """
     mix_helper = mixture_modules().mix_helper
     scores = np.asarray(scores, dtype=float)
+    if tolerance < 0:
+        raise ValueError("tolerance must be >= 0")
     kept, rows = usable_repeats(candidates, scores)
     if not kept:
         raise RuntimeError(f"no candidate has {MIN_REPEATS} valid repetitions "
@@ -437,18 +448,30 @@ def choose_k(candidates, scores):
     if len(kept_k) == 1:
         return kept_k[0], None, "single candidate" + note
     usable = scores[np.ix_(kept, rows)]
+    means = usable.mean(axis=1)
+    lowest = kept_k[int(np.argmin(means))]
     try:
         with contextlib.redirect_stdout(io.StringIO()):
             chosen, p_values = mix_helper.best_number_component(kept_k, usable, method="ordinal")
         if int(chosen) not in kept_k:      # its placeholder 3 when no index was found
             raise ValueError(f"best_number_component returned k={chosen}, not a candidate")
-        return int(chosen), p_values, f"mix_helper.best_number_component(ordinal) on {rows.size} repetitions" + note
+        chosen, rule = int(chosen), f"mix_helper.best_number_component(ordinal) on {rows.size} repetitions"
     except ValueError as error:
-        return kept_k[int(np.argmin(usable.mean(axis=1)))], None, f"lowest mean held-out score ({error})" + note
+        chosen, p_values, rule = lowest, None, f"lowest mean held-out score ({error})"
+    if tolerance > 0:
+        within = min(k for k, mean in zip(kept_k, means) if mean - means.min() <= tolerance)
+        if within < chosen:
+            rule += (f"; chosen by tolerance {tolerance:g}: k={within} is the smallest whose mean score is "
+                     f"within it of the lowest mean (k={lowest}), the test chose k={chosen}")
+            chosen = within
+        else:
+            rule += (f"; tolerance {tolerance:g} does not choose a smaller k (smallest within it of the "
+                     f"lowest mean k={lowest}: k={within})")
+    return chosen, p_values, rule + note
 
 
 def _select_once(arranged, weight, k_values, rng, method, n_repeats, max_synapses, test_fraction,
-                 min_synapses_per_parameter, max_iter, epsilon, n_starts, select_by):
+                 min_synapses_per_parameter, max_iter, epsilon, n_starts, select_by, select_tolerance):
     """One run of the selection recipe on arranged points; the ``NeuronGMM`` keeps the repeat models."""
     n = arranged.shape[0]
     size = min(n, int(max_synapses))
@@ -479,8 +502,9 @@ def _select_once(arranged, weight, k_values, rng, method, n_repeats, max_synapse
 
     # The selection rule wants "lower is better": minus the held-out log-likelihood, or the BIC.
     score = test_bic if select_by == "bic" else -test_log_likelihood
-    chosen, p_values, rule = choose_k(candidates, score)
+    chosen, p_values, rule = choose_k(candidates, score, select_tolerance)
     selection = {"candidates": candidates, "underpowered": underpowered, "select_by": select_by,
+                 "select_tolerance": float(select_tolerance),
                  "valid_repeats": np.isfinite(test_bic).sum(axis=1).tolist(),
                  "test_bic": test_bic.tolist(), "test_log_likelihood": test_log_likelihood.tolist(),
                  "p_values": None if p_values is None else [float(p) for p in p_values],
@@ -494,13 +518,15 @@ def _select_once(arranged, weight, k_values, rng, method, n_repeats, max_synapse
 
 def select_and_fit(points, weight, k_values, *, method="diagonal", n_repeats=20, max_synapses=10000,
                    test_fraction=0.2, min_synapses_per_parameter=20, seed=0, max_iter=50,
-                   epsilon=1e-3, n_starts=1, n_reruns=0, select_by="loglik"):
+                   epsilon=1e-3, n_starts=1, n_reruns=0, select_by="loglik", select_tolerance=0.0):
     """Choose k by a held-out score over repetitions, fit the chosen k on everything, record stability.
 
     ``points`` are soma-centred ``(dx, dy, dz)`` in um, ``weight`` the synapse
     weights (None: uniform). ``select_by`` is the held-out score of the
     selection, ``"loglik"`` (weight-normalised log-likelihood, default) or
-    ``"bic"`` (the weighted BIC of ``mixture_all``, see the module docstring).
+    ``"bic"`` (the weighted BIC of ``mixture_all``, see the module docstring),
+    and ``select_tolerance`` the effect-size side of the selection rule in the
+    units of that score (``choose_k``; 0 keeps the significance test alone).
     ``mixture_all`` uses 20 repetitions for cell-type
     fits and 50 for single-cell fits. ``n_starts`` EM starts per fit (see
     ``fit_once``; 1 as in ``mixture_all``). ``n_reruns`` extra, independently seeded
@@ -517,11 +543,13 @@ def select_and_fit(points, weight, k_values, *, method="diagonal", n_repeats=20,
         raise ValueError(f"method must be one of {METHODS}")
     if select_by not in SELECTION_SCORES:
         raise ValueError(f"select_by must be one of {SELECTION_SCORES}")
+    if select_tolerance < 0:
+        raise ValueError("select_tolerance must be >= 0")
     arranged = arrange(points)
     weight = np.ones(arranged.shape[0]) if weight is None else np.asarray(weight, dtype=float)
     rng = np.random.default_rng(seed)
     settings = (method, n_repeats, max_synapses, test_fraction, min_synapses_per_parameter, max_iter,
-                epsilon, n_starts, select_by)
+                epsilon, n_starts, select_by, select_tolerance)
     fit = _select_once(arranged, weight, k_values, rng, *settings)
     for _ in range(int(n_reruns)):
         rerun = _select_once(arranged, weight, k_values, rng, *settings)

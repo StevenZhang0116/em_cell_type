@@ -420,6 +420,19 @@ def test_mixture_gmm_is_imported_not_copied():
     bic = np.array([[100.0] * 8, [50.0 + 0.1 * i for i in range(8)], [60.0 + 0.1 * i for i in range(8)]])
     chosen, p_values, rule = neuron_gmm.choose_k([1, 4, 7], bic)
     assert chosen == 4 and rule.startswith("mix_helper") and "8 repetitions" in rule
+    # The tolerance accepts a smaller k whose mean score is within it of the lowest mean
+    # (means 100, 50.35, 60.35) although the paired test rejects; otherwise the test's choice stands.
+    chosen, _, rule = neuron_gmm.choose_k([1, 4, 7], bic, tolerance=60)
+    assert chosen == 1 and "chosen by tolerance 60" in rule and "the test chose k=4" in rule
+    chosen, _, rule = neuron_gmm.choose_k([1, 4, 7], bic, tolerance=5)
+    assert chosen == 4 and "does not choose a smaller k" in rule
+    with pytest.raises(ValueError):
+        neuron_gmm.choose_k([1, 4, 7], bic, tolerance=-1)
+    # A score that keeps improving by a significant but small step: the test takes the largest
+    # candidate, the tolerance the smallest within it of the best.
+    steady = np.array([[3.0], [2.0], [1.0]]) + 0.01 * np.arange(8) * np.array([[1], [2], [3]])
+    assert neuron_gmm.choose_k([1, 2, 3], steady)[0] == 3
+    assert neuron_gmm.choose_k([1, 2, 3], steady, tolerance=1.5)[0] == 2
     # A candidate that failed in most repetitions cannot win on its two surviving pairs
     # (two pairs give p = 0.5, which the test would read as "not significantly worse").
     sparse = np.full((2, 20), np.nan)
@@ -474,12 +487,15 @@ def test_select_and_fit_recovers_two_depth_components():
     assert fit.selection["rule"].startswith("mix_helper") and fit.selection["candidates"] == [1, 2, 3]
     assert not fit.selection["underpowered"] and np.asarray(fit.selection["test_bic"]).shape == (3, 6)
     assert fit.selection["select_by"] == "loglik" and fit.selection["valid_repeats"] == [6, 6, 6]
+    assert fit.selection["select_tolerance"] == 0.0
     # The weighted held-out BIC of ../mixture remains available and agrees here.
     by_bic = neuron_gmm.select_and_fit(points, None, [1, 2, 3], method="diagonal_constraint", n_repeats=6,
                                        min_synapses_per_parameter=10, seed=0, select_by="bic")
     assert by_bic.k == 2 and by_bic.selection["select_by"] == "bic"
     with pytest.raises(ValueError):
         neuron_gmm.select_and_fit(points, None, [1, 2, 3], n_repeats=6, select_by="aic")
+    with pytest.raises(ValueError):
+        neuron_gmm.select_and_fit(points, None, [1, 2, 3], n_repeats=6, select_tolerance=-0.1)
     density = fit.log_density(points)
     assert density.shape == (600,) and np.all(np.isfinite(density))
     # Scoring other points than the training ones must not reuse the training weights.

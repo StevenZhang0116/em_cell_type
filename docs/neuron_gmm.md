@@ -36,6 +36,21 @@ cannot win merely because its few surviving pairs cannot reject. The candidates 
 are recorded in the selection rule (`valid_repeats` lists the valid fits per candidate); a
 neuron with no usable candidate counts as a failed fit.
 
+`--select-tolerance` adds the effect-size side of the rule: the smallest k whose mean held-out
+score (over the same repetitions) is within the tolerance of the best candidate's mean is chosen
+when it is smaller than the test's choice. The tolerance is in the units of `--select-by`, nats
+per synapse for `loglik` and BIC units for `bic`; the selection record keeps `select_tolerance`
+and its rule says what the tolerance did, and `selection.png` draws it as a line on the score
+curve. It exists because significance alone does not stop on a dendrite. In a 200-dendrite pilot
+with the diagonal model (20 repetitions, 3 starts, k = 1, 4, ..., 16) the held-out log-likelihood
+rose by 0.56, 0.25, 0.20, 0.16 and 0.13 nats per synapse at the successive 3-component steps
+(medians over neurons, positive for every neuron) against a spread over repetitions of about
+0.07, so every step was significant (p = 2e-6, the smallest value 20 pairs can give) and every
+neuron chose the largest candidate its synapse count allowed; the held-out BIC did the same for
+93% of them. More repetitions make smaller gains significant and push the choice further up, so
+on clouds without a plateau the tolerance, not the number of repetitions, decides how many
+components a neuron gets. It is a resolution choice and belongs beside the results.
+
 `--covariance` picks the covariance form: `diagonal` (what `../mixture` uses for its
 relative-coordinate fits), `diagonal_constraint` (its cylindrical variant: one lateral centre
 shared by all components, one lateral variance per component) or `normal` (full
@@ -53,16 +68,35 @@ fitting time and the estimated time left.
 Candidates are limited to k with at least `--min-synapses-per-parameter` (20) synapses per
 free parameter in the **training part** of a repetition (80% of the synapses used, so the
 guard holds for every fit that enters the selection, not only for the final fit on all of
-them), as in `../mixture`; a diagonal k-component mixture has 7k - 1 parameters, so k = 2,
-3, 4 need 325, 500, 675 synapses in the cloud and k = 16 needs 2775. The default range is
-`--components-min 1 --components-max 16 --components-step 3` (1, 4, 7, 10, 13, 16), chosen
-for dendrites: the median proofread dendrite has 2400 synapses and supports up to about
-k = 13, and `--components-step` keeps the cost of the wide range down. It is wrong for axons:
-the median proofread axon has 400 synapses, so under the default range most axons have
-k = 1 as their only candidate (k = 4 needs 675). Run the axon side with
-`--components-min 1 --components-max 4 --components-step 1` (`../mixture` tries 2 to 4 for
-clouds under 10k synapses). A cloud that supports none of the candidates is fitted with the
-smallest one and flagged `underpowered`.
+them), as in `../mixture`. A k-component 3-D mixture has 7k - 1 free parameters with
+`diagonal`, 4k + 1 with `diagonal_constraint` and 10k - 1 with `normal`, so the smallest cloud
+that admits a candidate is
+
+| k | `diagonal` | `diagonal_constraint` | `normal` |
+|---|---|---|---|
+| 2 | 325 | 225 | 475 |
+| 4 | 675 | 425 | 975 |
+| 7 | 1200 | 725 | 1725 |
+| 10 | 1725 | 1025 | 2475 |
+| 16 | 2775 | 1625 | 3975 |
+| 19 | 3300 | 1925 | 4725 |
+
+and a cloud of 2000 synapses supports k up to 11 (`diagonal`), 19 (`diagonal_constraint`) or 8
+(`normal`). The default range is `--components-min 1 --components-max 16 --components-step 3`
+(1, 4, 7, 10, 13, 16), chosen for dendrites with the diagonal model: the median proofread
+dendrite has 2400 synapses and supports up to about k = 13, and `--components-step` keeps the
+cost of the wide range down. It is wrong for axons: the median proofread axon has 400 synapses,
+so under the default range most axons have k = 1 as their only candidate (k = 4 needs 675). Run
+the axon side with `--components-min 1 --components-max 4 --components-step 1` (`../mixture`
+tries 2 to 4 for clouds under 10k synapses). A cloud that supports none of the candidates is
+fitted with the smallest one and flagged `underpowered`.
+
+Because the guard depends on the cloud, so does the candidate set, and when the held-out score
+never plateaus the chosen k follows the cloud size rather than its structure (the pilot above:
+k = 10 for 2047 to 2228 synapses, 13 for 2272 to 2651, 16 from 2850 up). For a candidate set
+that is the same for every neuron, set `--components-max` at the guard's limit for
+`--min-synapses`: with `diagonal_constraint` and `--min-synapses 2000` that is
+`--components-max 19`.
 
 ## Fitting stability
 
@@ -124,7 +158,8 @@ Two things to keep in mind when reading the distances:
   `save_stability`, `load_stability` for the repeat and rerun models.
 - The distances `gmm_w2(a, b, method)`, `within_distances`, `distances_to`,
   `total_spread` and `between_distances(fits, n_pairs)`.
-- The selection pieces `supported_k`, `usable_repeats` and `choose_k`.
+- The selection pieces `supported_k`, `usable_repeats` and `choose_k(candidates, scores,
+  tolerance)`.
 
 Component parameters keep the fitter's (dx, dz, dy) axis order.
 
@@ -140,7 +175,7 @@ overwrites the previous one; the command and options are recorded in the summary
 | `stability.json` | the repeat models at the chosen k and the rerun models of every neuron |
 | `between.csv` | random pairs of neurons: W2 between the final models (`w2`) and between one repeat model of each (`w2_repeat`, matched to the within-neuron distances) |
 | `summary.json` | options, `n_components_counts`, medians, a `stability` block (within median, between median of the repeat models and of the final models, their ratio, the fraction of neurons whose within-distance is below the 10th percentile of the between-distances, rerun agreement), failures, time |
-| `selection.png` | counts of the chosen number of components and the held-out selection-score curve (the score of `--select-by`, relative to each neuron's best) |
+| `selection.png` | counts of the chosen number of components and the held-out selection-score curve (the score of `--select-by`, relative to each neuron's best), with the selection tolerance as a line when one was used |
 | `stability.png` | within- vs between-neuron distances, within-distance vs synapse count and vs k |
 
 ## Examples
@@ -151,4 +186,5 @@ $PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --starts 
 $PYTHON -u scripts/fit_neuron_gmms.py --sides axon --n-neurons 1000 --components-max 4 --components-step 1 --min-border-distance 100
 $PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 50 --reruns 2           # rerun agreement
 $PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --covariance diagonal_constraint
+$PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --min-synapses 2000 --covariance diagonal_constraint --components-max 19 --components-step 2 --select-tolerance 0.1   # same candidates for every neuron, effect-size rule
 ```

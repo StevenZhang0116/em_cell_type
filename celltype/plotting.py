@@ -317,7 +317,9 @@ def plot_gmm_selection(fits, path):
 
     ``fits`` are ``NeuronGMM`` objects (None entries skipped). The right panel
     shows the median and interquartile range over neurons; a flat curve means
-    the extra components buy little held-out evidence.
+    the extra components buy little held-out evidence. The selection tolerance
+    (``select_tolerance`` of the selection records, the largest when they
+    differ) is drawn as a line when one was used.
     """
     fits = [fit for fit in fits if fit is not None]
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
@@ -328,7 +330,7 @@ def plot_gmm_selection(fits, path):
     axes[0].set_xlabel("chosen number of components")
     axes[0].set_ylabel("neurons")
 
-    relative, scores = {}, set()
+    relative, scores, tolerances = {}, set(), set()
     for fit in fits:
         select_by = fit.selection.get("select_by", "bic")
         score = np.asarray(fit.selection["test_bic" if select_by == "bic" else "test_log_likelihood"], dtype=float)
@@ -336,6 +338,7 @@ def plot_gmm_selection(fits, path):
         if np.all(np.isnan(mean_score)):
             continue
         scores.add(select_by)
+        tolerances.add(float(fit.selection.get("select_tolerance", 0.0)))
         for k, value in zip(fit.selection["candidates"], mean_score - np.nanmin(mean_score)):
             relative.setdefault(k, []).append(value)
     ks = sorted(relative)
@@ -344,6 +347,11 @@ def plot_gmm_selection(fits, path):
         axes[1].plot(ks, mid, marker="o", color="k")
         axes[1].fill_between(ks, low, high, alpha=0.25, color="0.5")
         axes[1].set_xticks(ks)
+    if tolerances and max(tolerances) > 0:
+        tolerance = max(tolerances)
+        axes[1].axhline(tolerance, color="C3", linestyle="--", linewidth=1,
+                        label=f"selection tolerance {tolerance:g}")
+        axes[1].legend(fontsize=8, loc="upper right")
     what = "held-out BIC" if scores == {"bic"} else "minus held-out log-likelihood per synapse"
     axes[1].set_xlabel("number of components")
     axes[1].set_ylabel(f"{what}\nminus the neuron's lowest")
