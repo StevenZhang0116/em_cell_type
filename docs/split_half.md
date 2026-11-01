@@ -100,3 +100,77 @@ For validation of the **consensus partition itself**, use the optional
 `run_pipeline.py --stages validate` stage described in [split_cluster.md](split_cluster.md).
 The diagnostics above remain useful for the within-neuron sampling baseline; they
 do not test the reproducibility of a fitted clustering.
+
+## Depth/label strata and targeted partner comparisons
+
+After a completed split-half run, use this follow-up inside Slurm:
+
+```bash
+sbatch jobs/split_half_pairs.slurm
+# Or, inside an allocation after sourcing jobs/env.sh:
+$PYTHON -u scripts/analyze_split_half_pairs.py --side dendrite
+```
+
+It keeps the saved cohort, m values, repetitions, seed and weights. The current
+Stage-A fingerprint must match the original run; if it changed, rerun the base
+analysis first. Metadata and tables are reconstructed from that verified source
+and the saved raw distances. No GMM fit is used. Original outputs are preserved;
+the follow-up writes to `split_half/<side>/stratified/` and reuses a completed
+follow-up only when its settings and source fingerprints match (`--overwrite`
+forces recomputation).
+
+Every original random pair is annotated with its endpoints' labels and metadata,
+absolute depth difference, and these strata:
+
+- Depth difference: <=25, (25,50], (50,100], >100 um; missing depth is separate.
+- Cell-type relation: same, different, or missing.
+- Classification systems: E-E, I-I, E-I, or missing/unknown.
+
+Each observed combination is summarized separately at every m, with pair and
+distinct-neuron counts. No row means no observed pairs in that combination.
+The descriptive split margin is `between - max(self_i, self_j)` **within each
+repetition**, followed by its median across repetitions. A positive margin means
+between exceeds both endpoints' self distances on this summary; it is not noise
+correction, a null test, or a clustering threshold.
+
+The targeted analysis chooses up to three same/different-cell_type partner pairs
+per anchor, within the same excitatory/inhibitory class. All three edges of each
+triplet must satisfy depth gap <=25 um, observed count ratio <=1.25, border-distance
+gap <=50 um, and weight ESS/count gap <=0.1. Cost sums `(difference/caliper)^2`
+over covariates and edges, using log counts with caliper `log(1.25)`. Choose the
+lowest-cost triplet, break ties by exact neuron IDs, remove its partners for that
+anchor, and repeat. Partners can recur across anchors. This greedy rule does not
+maximize the number of pairs. W2 and spread are not selection features; spread
+is included in the balance report. Missing labels/covariates or inadequate overlap
+remain explicit exclusion statuses; calipers are never relaxed to fill a quota.
+
+Targeted edges are deduplicated. Original edges and every self-distance array
+are reused exactly; only missing edges are evaluated with the existing split
+sampler and W2 solver. Pair direction always uses **original cohort indices**
+i<j, comparing A_i to B_j; sorting root IDs would change the particular halves.
+The anchor may therefore use half A on one edge and half B on another. No new
+direction is added or treated as an independent observation.
+
+For every matched anchor and repetition, average distances to its same-label
+partners and to its different-label partners, then subtract same from different.
+Take the median of these differences across splits. Population and per-type
+medians/fractions give each anchor equal weight, regardless of partner count.
+Split percentiles are conditional split ranges, not confidence intervals.
+Random and targeted pair strata remain separate because their sampling rules differ.
+
+| File in `stratified/` | Content |
+|---|---|
+| `config.json`, `summary.json` | Source fingerprints/settings; counts, exclusions, reuse and effects; summary written last |
+| `distances.npz` | Original arrays plus new pairs/distances; original-order `is_random` and `is_targeted` flags |
+| `pairs.csv`, `strata.csv` | Annotated union of pairs, both membership flags, split margins; separate stratified summaries |
+| `cohort.csv`, `coverage.csv` | Every original neuron, match status, actual partner count and reuse; per-type coverage |
+| `matches.csv` | Selected triplets, partner rank and covariate matching cost |
+| `anchors.csv`, `effects.csv` | Per-anchor split summaries and equal-anchor overall/per-type effects |
+| `balance.csv` | Same/different partner means with equal anchor weights, standardized differences and maximum covariate gaps |
+| `comparison.png` | Random-pair depth strata at largest m (counts shown), matched effects across m and coverage |
+
+For N anchors, the three-pair cap requests at most 6N targeted edges before
+deduplication/reuse. Each new edge adds `len(m_values) * n_reps` OT evaluations.
+The job requests four CPUs with single-threaded BLAS. This follow-up still
+describes the observed neuron cohort; shared branches, truncation biases and
+shared neurons remain limitations, and no p-values are produced.

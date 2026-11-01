@@ -23,6 +23,10 @@ Beside the pipeline, `scripts/fit_neuron_gmms.py` fits the weighted Gaussian mix
 synapse halves and compares it with sample-matched between-neuron distances on a
 fixed cohort (`output/<dataset>/split_half/`). These are sampling diagnostics, not
 significance tests for discrete cell types.
+`scripts/analyze_split_half_pairs.py` stratifies those saved pairs by depth gap,
+labels and excitatory/inhibitory class, then adds up to three anatomically matched
+same/different-label partner pairs per anchor. Only missing distances are computed;
+results live in `split_half/<side>/stratified/`.
 
 `scripts/analyze_gmm_matches.py` compares saved GMMs to same- and different-label
 partners at matched soma depth, synapse counts, border distance and weight
@@ -39,7 +43,7 @@ See [docs/neuron_gmm.md](docs/neuron_gmm.md).
 - [docs/neuron_gmm.md](docs/neuron_gmm.md): per-neuron GMMs, which k to try, the selection rule, fitting
   stability, outputs.
 - [docs/split_half.md](docs/split_half.md): disjoint halves, matched sample sizes,
-  fixed-cohort comparisons, outputs and statistical limits.
+  fixed-cohort comparisons, depth/label strata, matched partners and statistical limits.
 - [docs/split_cluster.md](docs/split_cluster.md): clustering validation through
   `run_pipeline.py --stages validate`, A-only selection, resumable checkpoints and a
   dendrite pilot command.
@@ -48,7 +52,7 @@ See [docs/neuron_gmm.md](docs/neuron_gmm.md).
 
 `jobs/env.sh` selects the conda environment, caps BLAS at one thread (parallelism comes
 from joblib over `$SLURM_CPUS_PER_TASK`) and changes into the project directory. Use an
-interactive node (e.g. `salloc --account=amath --partition=cpu-g2 -c 10 --mem=32G
+interactive node (e.g. `salloc --account=cpu-g2-amath --partition=cpu-g2 -c 10 --mem=32G
 --time=4:00:00`) or an `sbatch` script that sources `jobs/env.sh`; Stage A needs about
 96 GB of memory, everything else a few GB.
 
@@ -61,10 +65,11 @@ $PYTHON -u scripts/run_pipeline.py --sides axon --n-neurons 1000 --stages distan
 $PYTHON -u scripts/run_pipeline.py --sides dendrite --n-neurons 500 --max-synapses 2000 --n-reps 5 --stages distances cluster   # 500 dendrites, largest clouds capped
 $PYTHON -u scripts/fit_neuron_gmms.py --sides dendrite --n-neurons 200 --starts 3           # per-neuron GMMs
 $PYTHON -u scripts/analyze_split_half.py --sides axon --n-neurons 200 --points-per-half 100 200 --n-reps 100 --between-pairs 1000  # split-half diagnostics
+$PYTHON -u scripts/analyze_split_half_pairs.py --side dendrite    # follow-up to a completed split-half run
 $PYTHON -u scripts/run_pipeline.py --sides dendrite --stages validate --n-neurons 100 --min-synapses 400 --validation-points-per-half 200 --validation-reps 10 --n-reps 5  # clustering validation
 ```
 
-All outputs of a dataset live in `output/<dataset>/trials/`, one set per dataset; its
+Stage B/C outputs live in `output/<dataset>/trials/`, one set per dataset; its
 `config.json` records the Stage B and C parameters of the last run. A run with other
 parameters recomputes the stages it runs and overwrites the previous files (changing only
 `--n-reps` adds or removes replicate files, and Stage C reruns when its summary was not made
@@ -84,9 +89,10 @@ celltype/    library code (no command-line parsing)
   pipeline.py    the stages (validate optional)
   neuron_gmm.py  per-neuron GMMs with the weighted fitter imported from ../mixture
   gmm_matches.py  covariate-matched label comparisons with 1/3/5 partner pairs
-  split_half.py  disjoint, sample-matched self/between W2 diagnostics
+  split_half.py  disjoint self/between W2 diagnostics, pair strata and matched partners
   split_cluster.py  held-out validation of bootstrap consensus clustering
 scripts/     run_pipeline.py, fit_neuron_gmms.py, analyze_gmm_matches.py, analyze_split_half.py
+             analyze_split_half_pairs.py
 docs/        pipeline.md, neuron_gmm.md, split_half.md, split_cluster.md
 tests/       pytest unit tests
 jobs/        env.sh (job environment: conda env, 1 BLAS thread) and the Slurm scripts (unit tests, dendrite pipeline with validation, dendrite GMMs and matched comparisons)

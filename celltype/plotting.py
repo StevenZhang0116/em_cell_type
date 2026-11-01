@@ -24,6 +24,7 @@ Split-half diagnostics (celltype/split_half.py):
   split_half_distributions  split ranges per neuron, distributions of medians, endpoint baselines
   split_half_curves         matched-distance medians vs points per half, with a fixed cohort
   split_half_covariates     self-distance vs cloud spread and weight concentration
+  split_half_pairs         depth/label strata and anatomically matched partner comparisons
 
 Clustering validation (celltype/split_cluster.py):
   split_cluster              ARI vs joint coverage, held-out separation, k chosen from half A, per m
@@ -181,6 +182,50 @@ def plot_split_half_covariates(neurons, path):
                 title="Weight concentration only; not independence")
     axes[2].set(xlabel="Complete-cloud synapse count", ylabel="Median self W2 (um)")
     axes[0].legend(fontsize=8)
+    _save(fig, path)
+
+
+def plot_split_half_pairs(strata, effects, coverage, path):
+    """Random-pair depth strata at largest m, matched effects across m, and coverage."""
+    fig, axes = plt.subplots(2, 2, figsize=(13, 9), constrained_layout=True)
+    bins = ["<=25", "25-50", "50-100", ">100"]
+    largest = int(effects.m.max())
+    random = strata.loc[(strata["sample"] == "random") & (strata.m == largest)]
+    for (system, relation), frame in random.groupby(["system_pair", "label_relation"]):
+        if system == "missing" or relation == "missing":
+            continue
+        frame = frame.set_index("depth_bin").reindex(bins)
+        label = f"{system}, {relation}; n=" + "/".join(str(int(n)) if pd.notna(n) else "0" for n in frame.n_pairs)
+        for ax, column in ((axes[0, 0], "median_between_um"), (axes[0, 1], "median_margin_um")):
+            ax.plot(range(4), frame[column], "o-", label=label)
+    for ax in axes[0]:
+        ax.set(xticks=range(4), xticklabels=bins, xlabel="Soma depth gap (um)")
+    if len(random):
+        axes[0, 0].legend(fontsize=7)
+    else:
+        axes[0, 0].text(0.5, 0.5, "No random pairs", ha="center", transform=axes[0, 0].transAxes)
+    axes[0, 0].set(ylabel="Median between W2 (um)", title=f"Original random pairs, m={largest}; counts by bin")
+    axes[0, 1].axhline(0, color="0.5", ls="--")
+    axes[0, 1].set(ylabel="Median split margin (um)", title="Between - max(endpoint self), within split")
+    for (system, label), frame in effects.loc[effects.grouping == "cell_type"].groupby(["classification_system", "cell_type"]):
+        frame = frame.sort_values("m")
+        axes[1, 0].plot(frame.m, frame.median_delta_um, "o-", label=f"{label} ({system}); n={int(frame.n_anchors.iloc[0])}")
+    overall = effects.loc[effects.grouping == "overall"].sort_values("m")
+    axes[1, 0].plot(overall.m, overall.median_delta_um, "o--", color="black", label=f"All; n={int(overall.n_anchors.iloc[0])}")
+    axes[1, 0].axhline(0, color="0.5", ls="--")
+    axes[1, 0].set(xticks=overall.m, xlabel="Synapses per half (m)", ylabel="Median anchor delta (um)",
+                   title="Matched partners: different - same; equal anchor weights")
+    axes[1, 0].legend(fontsize=7)
+    x = np.arange(len(coverage))
+    axes[1, 1].bar(x - 0.18, coverage.coverage, width=0.36, label=">=1 partner pair")
+    axes[1, 1].bar(x + 0.18, coverage.n_with_3_pairs / coverage.n_neurons, width=0.36, label="3 partner pairs")
+    names = [f"{label}\n{matched}/{total}" for label, matched, total in
+             zip(coverage.cell_type.fillna("missing"), coverage.n_matched, coverage.n_neurons)]
+    axes[1, 1].set(xticks=x, xticklabels=names, ylim=(0, 1.05), ylabel="Fraction of original cohort",
+                   title="Matching coverage; labels show matched / total")
+    axes[1, 1].tick_params(axis="x", labelsize=7)
+    axes[1, 1].legend(fontsize=8)
+    fig.suptitle("Split-half follow-up | fixed cohort and splits | descriptive comparisons")
     _save(fig, path)
 
 

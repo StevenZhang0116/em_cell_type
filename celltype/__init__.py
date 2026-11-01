@@ -15,7 +15,7 @@ Modules:
   pipeline    the stages (extract, distances, cluster; validate is optional)
   neuron_gmm  per-neuron Gaussian mixtures with the weighted GMM fitter imported from ../mixture,
               and their fitting stability (mixture Wasserstein distance between repeated fits)
-  split_half  disjoint, sample-matched self/between distances on a fixed neuron cohort
+  split_half  disjoint self/between distances, depth/label strata and matched partners on a fixed cohort
   split_cluster  held-out validation of the consensus clustering on disjoint synapse halves
   gmm_matches  compare saved GMMs to covariate-matched same/different-label partners
 
