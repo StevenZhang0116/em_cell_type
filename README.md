@@ -24,6 +24,14 @@ synapse halves and compares it with sample-matched between-neuron distances on a
 fixed cohort (`output/<dataset>/split_half/`). These are sampling diagnostics, not
 significance tests for discrete cell types.
 
+`scripts/analyze_gmm_matches.py` compares saved GMMs to same- and different-label
+partners at matched soma depth, synapse counts, border distance and weight
+concentration, within the same classification system. It reuses or computes only
+the needed final-model distances; results are descriptive and include matching
+coverage and covariate balance. It compares 1, 3 and 5 partner pairs per neuron,
+including a fixed cohort with five pairs, with equal weight per neuron.
+See [docs/neuron_gmm.md](docs/neuron_gmm.md).
+
 ## Documentation
 
 - [docs/pipeline.md](docs/pipeline.md): Stages A to C, outputs and options, the two
@@ -75,12 +83,13 @@ celltype/    library code (no command-line parsing)
   plotting.py    Stage-C, per-neuron GMM, split-half and validation figures
   pipeline.py    the stages (validate optional)
   neuron_gmm.py  per-neuron GMMs with the weighted fitter imported from ../mixture
+  gmm_matches.py  covariate-matched label comparisons with 1/3/5 partner pairs
   split_half.py  disjoint, sample-matched self/between W2 diagnostics
   split_cluster.py  held-out validation of bootstrap consensus clustering
-scripts/     run_pipeline.py, fit_neuron_gmms.py, analyze_split_half.py
+scripts/     run_pipeline.py, fit_neuron_gmms.py, analyze_gmm_matches.py, analyze_split_half.py
 docs/        pipeline.md, neuron_gmm.md, split_half.md, split_cluster.md
 tests/       pytest unit tests
-jobs/        env.sh (job environment: conda env, 1 BLAS thread) and the Slurm scripts (unit tests, dendrite pipeline with validation, dendrite GMMs)
+jobs/        env.sh (job environment: conda env, 1 BLAS thread) and the Slurm scripts (unit tests, dendrite pipeline with validation, dendrite GMMs and matched comparisons)
 output/      outputs per dataset (clouds, trials, split_half, gmm); ignored by git
 log/         Slurm logs; ignored by git
 ```

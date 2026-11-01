@@ -16,6 +16,10 @@ Per-neuron GMM figures (celltype/neuron_gmm.py):
   gmm_labels          chosen number of components and total held-out gain by dataset label, and vs soma depth
   gmm_depth_profiles  mean marginal density of the fitted mixtures along the depth offset, per dataset label
 
+Matched GMM comparisons (celltype/gmm_matches.py):
+  gmm_matches             one-pair baseline: coverage, distances, label effects and balance
+  gmm_partner_robustness  1/3/5 partner pairs, fixed-cohort sensitivity and coverage
+
 Split-half diagnostics (celltype/split_half.py):
   split_half_distributions  split ranges per neuron, distributions of medians, endpoint baselines
   split_half_curves         matched-distance medians vs points per half, with a fixed cohort
@@ -445,6 +449,84 @@ def plot_gmm_tolerance_scan(scan, path, used=None):
 def _label_order(table, column):
     """Label values ordered by their neurons' median soma depth (pia-side first)."""
     return table.groupby(column)["soma_depth_um"].median().sort_values().index.tolist()
+
+
+def plot_gmm_matches(matches, coverage, balance, path):
+    """Coverage, paired distances, per-label effects and covariate balance; no inferential bars."""
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9), constrained_layout=True)
+    names = coverage.cell_type.fillna("missing").astype(str).tolist()
+    axes[0, 0].bar(range(len(names)), coverage.coverage, color="0.4")
+    axes[0, 0].set(xticks=range(len(names)),
+                   xticklabels=[f"{name}\n{m}/{n}" for name, m, n in
+                                zip(names, coverage.n_matched, coverage.n_neurons)],
+                   ylim=(0, 1.05), ylabel="Matched fraction", title="Coverage by anchor label")
+    axes[0, 0].tick_params(axis="x", labelsize=7)
+    if len(matches):
+        axes[0, 1].scatter(matches.same_w2_um, matches.different_w2_um, s=10, alpha=0.5)
+        top = max(matches.same_w2_um.max(), matches.different_w2_um.max(), 1)
+        axes[0, 1].plot([0, top], [0, top], "--", color="0.5")
+        groups = list(matches.groupby("cell_type", sort=True))
+        for i, (name, frame) in enumerate(groups):
+            axes[1, 0].scatter(np.full(len(frame), i), frame.delta_um, s=9, alpha=0.35, color="0.3")
+            axes[1, 0].plot([i - 0.25, i + 0.25], [frame.delta_um.median()] * 2, color="C3", lw=2)
+        axes[1, 0].set(xticks=range(len(groups)),
+                       xticklabels=[f"{name}\n{len(frame)}" for name, frame in groups])
+        axes[1, 0].tick_params(axis="x", labelsize=7)
+    else:
+        axes[0, 1].text(0.5, 0.5, "No matched triplets", ha="center", transform=axes[0, 1].transAxes)
+    axes[0, 1].set(xlabel="MW2 to same-label partner (um)", ylabel="MW2 to different-label partner (um)",
+                   title="One point per anchor; above line = same closer")
+    axes[1, 0].axhline(0, color="0.5", ls="--")
+    axes[1, 0].set(ylabel="Different - same MW2 (um)", title="Conditional differences; red = median")
+    finite_balance = balance.dropna(subset=["standardized_mean_difference"])
+    axes[1, 1].barh(finite_balance.covariate, finite_balance.standardized_mean_difference, color="0.4")
+    axes[1, 1].axvline(0, color="0.5", lw=1)
+    axes[1, 1].set(xlabel="Same - different partner mean / cohort SD",
+                   title="Matched covariate balance (undefined omitted)")
+    fig.suptitle("1 partner pair per anchor | within classification_system | descriptive comparison")
+    _save(fig, path)
+
+
+def plot_gmm_partner_robustness(summary, coverage, path):
+    """Partner-count sensitivity; each distance difference is averaged within anchor."""
+    fig, axes = plt.subplots(2, 2, figsize=(12, 9), constrained_layout=True)
+    counts = sorted(summary.requested_pairs.unique())
+    overall = summary.loc[summary.grouping == "overall"]
+    for population, name in (("all_matched", "All matched (up to k pairs)"),
+                             ("common_5", "Fixed cohort (5 pairs available)")):
+        frame = overall.loc[overall.population == population].sort_values("requested_pairs")
+        label = f"{name}; n={int(frame.n_matched.iloc[0])}"
+        axes[0, 0].plot(frame.requested_pairs, frame.median_delta_um, "o-", label=label)
+        axes[0, 1].plot(frame.requested_pairs, frame.fraction_same_closer, "o-", label=label)
+    axes[0, 0].axhline(0, color="0.6", ls="--")
+    axes[0, 0].set(ylabel="Median anchor mean difference (um)", title="Overall distance difference")
+    axes[0, 0].legend(fontsize=8)
+    axes[0, 1].set(ylabel="Fraction of anchors with positive mean difference", ylim=(0, 1),
+                   title="Same-label partners closer on average")
+    common = summary.loc[(summary.population == "common_5") & (summary.grouping == "cell_type")]
+    for (system, label), frame in common.groupby(["classification_system", "cell_type"]):
+        frame = frame.sort_values("requested_pairs")
+        axes[1, 0].plot(frame.requested_pairs, frame.median_delta_um, "o-",
+                        label=f"{label} ({system}); n={int(frame.n_matched.iloc[0])}")
+    if len(common):
+        axes[1, 0].legend(fontsize=7)
+    else:
+        axes[1, 0].text(0.5, 0.5, "No anchors with 5 pairs", ha="center", transform=axes[1, 0].transAxes)
+    axes[1, 0].axhline(0, color="0.6", ls="--")
+    axes[1, 0].set(ylabel="Median anchor mean difference (um)", title="Per label, fixed cohort")
+    for ax in (axes[0, 0], axes[0, 1], axes[1, 0]):
+        ax.set(xticks=counts, xlabel="Requested partner pairs (k)")
+    x = np.arange(len(coverage))
+    width = 0.25
+    for index, count in enumerate(counts):
+        axes[1, 1].bar(x + (index - 1) * width, coverage[f"n_with_{count}_pairs"] / coverage.n_neurons,
+                       width=width, label=f">= {count} pairs")
+    axes[1, 1].set(xticks=x, xticklabels=coverage.cell_type.fillna("missing"), ylim=(0, 1.05),
+                   ylabel="Fraction of original neurons", title="Coverage by available partner count")
+    axes[1, 1].tick_params(axis="x", labelsize=8)
+    axes[1, 1].legend(fontsize=8)
+    fig.suptitle("1 / 3 / 5 partner pairs | equal anchor weights | descriptive comparisons")
+    _save(fig, path)
 
 
 def plot_gmm_labels(table, column, path):

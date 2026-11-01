@@ -135,7 +135,9 @@ pyramidal cells with a basal cluster, a thin apical trunk and a tuft hundreds of
 above the soma (a fifth of their mass more than 150 um above it) take more components than
 superficial cells, whose arbours have no room above. The same vertical layout dominates the W2
 distances of the pipeline (Stage C's distance matrix correlates 0.63 with the difference in soma
-depth), so both readouts follow laminar position; neither is a type marker independent of depth.
+depth), so both readouts track laminar position. These unadjusted summaries alone
+do not establish label-related structure beyond depth; the matched comparisons
+below address that question.
 
 ## Fitting stability
 
@@ -221,6 +223,106 @@ overwrites the previous one; the command and options are recorded in the summary
 | `tolerance_scan.png` | fraction of neurons per chosen number of components at each scanned tolerance (the run's own marked) |
 | `labels.png` | chosen number of components and total held-out gain per dataset `cell_type` (ordered by median soma depth; red: median), and the chosen number against soma depth with its Spearman correlation |
 | `depth_profiles.png` | per `cell_type` with at least 5 neurons, the mean over its neurons of the fitted mixture's marginal density along the depth offset (pia upwards, dashed line at the soma) |
+
+## Comparing labels at matched depth and sampling conditions
+
+After fitting the mixtures, run the separate analysis inside a Slurm allocation:
+
+```bash
+source jobs/env.sh
+$PYTHON -u scripts/analyze_gmm_matches.py --side dendrite
+```
+
+The job `jobs/gmm_matches.slurm` runs its tests and this command on one CPU.
+The analysis joins `neurons.csv` to Stage A by exact neuron ID, checks observed
+counts and soma depths, and reads only metadata and weights from the clouds.
+It adds distance to the border (converted from nm to um), mean border weight,
+and weight ESS / observed count, where ESS = (sum w)^2 / sum(w^2). These describe
+the complete observed cloud, not the particular subsample used in a fit; ESS
+does not correct for spatial dependence.
+
+For every anchor neuron, choose up to five pairs of partners, each containing
+one same-cell_type and one different-cell_type neuron within the same
+classification_system. All three edges of each triplet must pass:
+
+| Covariate | Default maximum gap |
+|---|---|
+| Soma depth | 25 um (`--depth-caliper`) |
+| Observed and fitted counts, each | larger / smaller <= 1.25 (`--count-ratio`) |
+| Soma distance to border | 50 um (`--border-caliper`) |
+| Weight ESS / observed count | 0.1 (`--ess-caliper`) |
+
+Among feasible triplets minimize `sum_edges sum_features (difference / caliper)^2`;
+counts use log ratios with `log(count_ratio)` as their caliper. Ties are resolved
+by neuron IDs. Selection uses only these covariates and the labels, never model
+shape, component count or MW2. Mean border weight is reported as a balance
+diagnostic, not used in the matching cost. After selecting a triplet, remove
+both partners from that anchor's candidates and repeat, up to five times. The
+first triplet is unchanged from the one-partner analysis. This greedy selection
+prioritizes match quality; it does not maximize the number of feasible pairs.
+Partners cannot recur within an anchor but may recur across anchors. Calipers
+are enforced within each triplet, not between partners from different triplets.
+
+Only then obtain the final-model MW2 for the two anchor edges: reuse matching
+rows of `between.csv` and compute missing distances from `models.json`. At most
+ten distances per matched anchor are needed, with shared edges computed once,
+and no GMMs are refitted. Every run rebuilds this small analysis; there is no
+separate persistent distance cache.
+The primary effect is delta = MW2(anchor, different) - MW2(anchor, same), in um.
+Positive values mean the same-label partner is closer. Effects are conditional
+on successful matching; labels with little overlap must be read with coverage.
+Repeated partners make these dependent comparisons, so no pairwise p-values or
+confidence intervals are produced. The analysis uses final models only.
+
+The robustness analysis takes the first 1, 3 or 5 selected pairs. For each anchor
+it averages delta over those pairs; population medians and positive fractions
+then give every anchor equal weight, regardless of its partner count. It reports
+two populations at every count:
+
+- `all_matched`: every anchor with at least one pair, using fewer than requested
+  when necessary; `n_pairs` and `n_full_requested` make that shortfall explicit.
+- `common_5`: the same anchors with five selected pairs at all three counts.
+  This separates sensitivity to partner count from changes in the anchor cohort.
+
+Balance also gives anchors equal weight: partner covariates and absolute gaps
+are averaged within anchor before computing population means or median gaps.
+Maximum gaps cover all selected pairs. The SD denominator always comes from the
+full eligible cohort. These checks matter because later partners can match less
+closely even though they still satisfy the calipers. More partners are not more
+independent neurons, and they cannot fill gaps in covariate overlap.
+
+Outputs go to `gmm/<side>/matched_comparison/`:
+
+- `config.json`: calipers, fitting options and fingerprints of current inputs.
+  Original GMM files lack a Stage-A fingerprint; the ID/count/depth checks do
+  not retrospectively establish the original fit's full input provenance.
+- `covariates.csv`: all neurons, covariates, matching/exclusion status,
+  `n_partner_pairs` (0 to 5), and partner reuse across all selected pairs.
+- `matches.csv`: one row per matched anchor, partner IDs/labels, covariate cost,
+  both distances and delta. `distances.csv` records unique edges and their source.
+- `coverage.csv`, `effects.csv`: per-label coverage/reasons and one-pair effects;
+  coverage also includes counts with at least 1, 3 and 5 selected pairs.
+- `balance.csv`: same/different partner means, their difference divided by the
+  eligible cohort's SD, and absolute gaps for partners and anchor edges.
+- `comparison.png`: coverage, paired distances, per-label deltas and balance.
+- `partner_matches.csv`: all selected triplets with `partner_rank` and distances.
+- `anchor_effects.csv`: one row per anchor and requested count, with actual
+  `n_pairs`, mean distances/delta, and `in_common_5` membership.
+- `robustness.csv`: overall and per-label effects for both populations at 1/3/5
+  pairs, actual triplet counts, counts meeting the request, match cost and reuse.
+- `robustness_balance.csv`: balance for both populations at each partner count.
+- `robustness.png`: overall sensitivity, per-label effects in the fixed cohort,
+  and coverage by partner count.
+- `summary.json`: original one-pair effects, coverage, reuse and per-label effects,
+  plus overall `partner_robustness`; written last. Distance-source counts cover
+  all selected pairs. Original `matches.csv`, `effects.csv`, `balance.csv` and
+  `comparison.png` remain one-pair results.
+
+The tests cover removal of a synthetic depth confound, recovery of a label-related
+shape difference, matching independent of outcomes and row order, all-three-edge
+calipers, classification groups, large integer IDs, source joins, distance reuse,
+nested partner selection, partner uniqueness, equal anchor weights, a fixed
+cohort, and empty-overlap/empty-fixed-cohort cases.
 
 ## Examples
 
