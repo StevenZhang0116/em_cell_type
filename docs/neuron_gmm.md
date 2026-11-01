@@ -57,6 +57,22 @@ neuron chose the largest candidate its synapse count allowed; the held-out BIC d
 on clouds without a plateau the tolerance, not the number of repetitions, decides how many
 components a neuron gets. It is a resolution choice and belongs beside the results.
 
+Because the choice moves with the tolerance, every run re-evaluates the tolerance rule at other
+tolerances on the stored held-out scores (`--scan-tolerances`; default 0, 0.05, 0.1, 0.15, 0.2
+and 0.3 nats per synapse for `loglik`, none for `bic`, plus the run's own tolerance when one
+is used; no refitting): `tolerance_scan` in `summary.json` and `tolerance_scan.png` give the number of
+neurons per chosen number of components at each tolerance. At tolerance 0 the scan takes the
+lowest mean score, not the paired test. `neurons.csv` records per neuron the held-out gains
+in the score's units: `gain_first_step` between the two smallest usable candidates,
+`gain_total` from the smallest candidate to the best candidate's mean, `gain_beyond_chosen`
+from the chosen number to that best (at most the tolerance). In a 1000-dendrite run with
+`diagonal_constraint`, candidates 1, 3, ..., 19, 30 repetitions and tolerance 0.1, the median
+gain from 1 to 3 components was 0.28 nats per synapse (above 0.1 for 93% of the neurons) and
+the median gain beyond 3 was 0.11, so the tolerance cut the population at its median:
+tolerances 0.05, 0.1, 0.15 and 0.2 left 218, 434, 558 and 596 of the 1000 neurons with 3
+components. The chosen number is a resolution setting read off a smooth curve, not a property
+of the neuron.
+
 `--covariance` picks the covariance form: `diagonal` (what `../mixture` uses for its
 relative-coordinate fits), `diagonal_constraint` (its cylindrical variant: one lateral centre
 shared by all components, one lateral variance per component) or `normal` (full
@@ -103,6 +119,23 @@ k = 10 for 2047 to 2228 synapses, 13 for 2272 to 2651, 16 from 2850 up). For a c
 that is the same for every neuron, set `--components-max` at the guard's limit for
 `--min-synapses`: with `diagonal_constraint` and `--min-synapses 2000` that is
 `--components-max 19`.
+
+### The fits against the dataset labels
+
+The labels play no part in the fits. `labels.png`, `depth_profiles.png` and `by_cell_type` in
+`summary.json` (`label_summary`) group the finished per-neuron results by the dataset's
+`cell_type` (the first label column present otherwise) to show what the chosen number of
+components and the layout of the mixtures track. In the 1000-dendrite run above the chosen
+number rose with soma depth (Spearman 0.63): 3 for L2IT and basket cells, 5 for L3IT and L4IT,
+7 for L5IT, L6IT, L6CT and L5ET, 1 for neurogliaform cells, and the total held-out gain over one
+component went from 0.09 (NGC) to about 1 nats per synapse (L6CT). With `diagonal_constraint`
+all components share one lateral centre, so a mixture is a profile along depth with a radius per
+segment, and the number of components counts the segments the cloud has along depth: deep
+pyramidal cells with a basal cluster, a thin apical trunk and a tuft hundreds of micrometres
+above the soma (a fifth of their mass more than 150 um above it) take more components than
+superficial cells, whose arbours have no room above. The same vertical layout dominates the W2
+distances of the pipeline (Stage C's distance matrix correlates 0.63 with the difference in soma
+depth), so both readouts follow laminar position; neither is a type marker independent of depth.
 
 ## Fitting stability
 
@@ -165,7 +198,9 @@ Two things to keep in mind when reading the distances:
 - The distances `gmm_w2(a, b, method)`, `within_distances`, `distances_to`,
   `total_spread` and `between_distances(fits, n_pairs)`.
 - The selection pieces `supported_k`, `usable_repeats` and `choose_k(candidates, scores,
-  tolerance)`.
+  tolerance)`; `k_within_tolerance` (the tolerance rule alone), `selection_scores` (a
+  selection record's score matrix), `selection_gains(fit)`, `tolerance_scan(fits, tolerances)`
+  and `label_summary(table, column)` for the per-label medians.
 
 Component parameters keep the fitter's (dx, dz, dy) axis order.
 
@@ -176,13 +211,16 @@ overwrites the previous one; the command and options are recorded in the summary
 
 | File | Content |
 |---|---|
-| `neurons.csv` | per neuron: covariates, labels, chosen number of components (`n_components`), log-likelihood, BIC, spread, `w2_within_median`, `w2_within_max`, `w2_to_final_mean`, `spread_um`, `w2_within_rel`, `n_stability_models`, `w2_rerun_median`, `rerun_k_agreement` |
+| `neurons.csv` | per neuron: covariates, labels, chosen number of components (`n_components`), log-likelihood, BIC, spread, held-out gains `gain_first_step`, `gain_total`, `gain_beyond_chosen` (units of `--select-by`), `w2_within_median`, `w2_within_max`, `w2_to_final_mean`, `spread_um`, `w2_within_rel`, `n_stability_models`, `w2_rerun_median`, `rerun_k_agreement` |
 | `models.json` | every final mixture (weights, means, covariances) with its k-selection and stability records |
 | `stability.json` | the repeat models at the chosen k and the rerun models of every neuron |
 | `between.csv` | random pairs of neurons: W2 between the final models (`w2`) and between one repeat model of each (`w2_repeat`, matched to the within-neuron distances) |
-| `summary.json` | options, `n_components_counts`, medians, a `stability` block (within median, between median of the repeat models and of the final models, their ratio, the fraction of neurons whose within-distance is below the 10th percentile of the between-distances, rerun agreement), failures, time |
+| `summary.json` | options, `n_components_counts`, medians (including `median_gain_first_step`, `median_gain_total`), `tolerance_scan` (neurons per chosen number of components at each scanned tolerance), `by_cell_type` (per-label medians of `label_summary`), a `stability` block (within median, between median of the repeat models and of the final models, their ratio, the fraction of neurons whose within-distance is below the 10th percentile of the between-distances, rerun agreement), failures, time |
 | `selection.png` | counts of the chosen number of components and the held-out selection-score curve (the score of `--select-by`, relative to each neuron's best), with the selection tolerance as a line when one was used |
 | `stability.png` | within- vs between-neuron distances, within-distance vs synapse count and vs k |
+| `tolerance_scan.png` | fraction of neurons per chosen number of components at each scanned tolerance (the run's own marked) |
+| `labels.png` | chosen number of components and total held-out gain per dataset `cell_type` (ordered by median soma depth; red: median), and the chosen number against soma depth with its Spearman correlation |
+| `depth_profiles.png` | per `cell_type` with at least 5 neurons, the mean over its neurons of the fitted mixture's marginal density along the depth offset (pia upwards, dashed line at the soma) |
 
 ## Examples
 

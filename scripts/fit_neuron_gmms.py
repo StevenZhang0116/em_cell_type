@@ -28,16 +28,24 @@ output/<dataset>/gmm/<side>/, and every run overwrites the previous one (the
 options and command are in the summary):
 
   neurons.csv     per neuron: covariates, labels, chosen number of components, log-likelihood,
-                  BIC, spread, within-neuron W2 (median, max, relative to the spread), rerun agreement
+                  BIC, spread, held-out gains (gain_first_step, gain_total, gain_beyond_chosen, in
+                  the units of --select-by), within-neuron W2 (median, max, relative to the spread),
+                  rerun agreement
   models.json     every final mixture (weights, means, covariances in (dx, dz, dy) order)
                   with its selection and stability records
   stability.json  the repeat models at the chosen number of components (and rerun models)
   between.csv     W2 between random pairs of neurons: final models (w2) and one repeat model
                   of each (w2_repeat, matched to the within-neuron distances)
-  summary.json    options, component counts, medians, stability summary, failures, time
+  summary.json    options, component counts, medians, stability summary, the tolerance scan,
+                  per-label medians (by_cell_type), failures, time
   selection.png   histogram of the chosen number of components and the held-out selection-score curve
                   (with the selection tolerance as a line when one was used)
   stability.png   within- vs between-neuron W2, W2 vs synapse count, W2 vs components
+  tolerance_scan.png  what the tolerance rule would choose at other tolerances (--scan-tolerances),
+                  from the stored held-out scores
+  labels.png      chosen number of components and total held-out gain by dataset cell_type, and
+                  vs soma depth; depth_profiles.png: mean marginal density of the fitted mixtures
+                  along depth per cell_type (the labels play no part in the fits)
 
 "Components" throughout are the mixture components of one neuron's GMM
 (--components-min/--components-max/--components-step); the k of the clustering
@@ -66,7 +74,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from celltype import neuron_gmm, pipeline, plotting
 from celltype.clouds import Clouds
-from celltype.config import DATASETS, SIDES, allocated_cpus, clouds_path, gmm_dir
+from celltype.config import DATASETS, LABEL_COLUMNS, SIDES, allocated_cpus, clouds_path, gmm_dir
 
 
 def _median(values):
@@ -133,6 +141,11 @@ def main():
                              "units for bic); the test's choice stays in the record as a diagnostic. "
                              "0 (default) keeps the test alone, which chooses the largest candidate on a "
                              "cloud whose held-out score never plateaus")
+    parser.add_argument("--scan-tolerances", type=float, nargs="*", default=None,
+                        help="tolerances at which the tolerance rule is re-evaluated on the stored held-out "
+                             "scores (no refitting), for summary.json and tolerance_scan.png; the run's own "
+                             "tolerance, when one is used, is always included; default 0 0.05 0.1 0.15 0.2 "
+                             "0.3 nats per synapse for --select-by loglik, none for bic")
     parser.add_argument("--components-min", type=int, default=1,
                         help="smallest number of mixture components tried (../mixture tries 2 to 4 for "
                              "clouds under 10k synapses; the default 1-16 by 3 tries 1, 4, 7, 10, 13, 16). "
@@ -171,6 +184,12 @@ def main():
     start = time.time()
 
     k_values = list(range(args.components_min, args.components_max + 1, max(args.components_step, 1)))
+    scan_tolerances = args.scan_tolerances
+    if scan_tolerances is None:
+        scan_tolerances = [0.0, 0.05, 0.1, 0.15, 0.2, 0.3] if args.select_by == "loglik" else []
+    if args.select_tolerance > 0 and not any(np.isclose(args.select_tolerance, t) for t in scan_tolerances):
+        scan_tolerances.append(args.select_tolerance)
+    scan_tolerances = sorted(scan_tolerances)
     options = dict(method=args.covariance, n_repeats=args.repeats, max_synapses=args.max_synapses,
                    test_fraction=args.test_fraction,
                    min_synapses_per_parameter=args.min_synapses_per_parameter, n_starts=args.starts,
@@ -201,6 +220,16 @@ def main():
                               "seed": args.seed})
         neuron_gmm.save_stability(outdir / "stability.json", fits, cell_ids)
         plotting.plot_gmm_selection(fits, outdir / "selection.png")
+        # The tolerance rule at other tolerances, from the stored scores, and the fits read against
+        # the dataset labels (descriptive: the labels play no part in the fits).
+        scan = neuron_gmm.tolerance_scan(fits, scan_tolerances)
+        if scan:
+            plotting.plot_gmm_tolerance_scan(scan, outdir / "tolerance_scan.png",   # at 0 the run used the test
+                                             used=args.select_tolerance if args.select_tolerance > 0 else None)
+        label = next((column for column in ("cell_type", *LABEL_COLUMNS) if column in table), None)
+        if label is not None:
+            plotting.plot_gmm_labels(table, label, outdir / "labels.png")
+            plotting.plot_gmm_depth_profiles(fits, table, label, outdir / "depth_profiles.png")
 
         between = neuron_gmm.between_distances(fits, args.between_pairs, seed=args.seed)
         between.insert(0, "pt_root_id_b", cell_ids[between.pop("j").to_numpy(dtype=int)])
@@ -222,15 +251,23 @@ def main():
             "median_log_likelihood": _median(fitted["log_likelihood"]),
             "median_lateral_sd_um": _median(fitted["lateral_sd_um"]),
             "median_depth_sd_um": _median(fitted["depth_sd_um"]),
+            "median_gain_first_step": _median(fitted["gain_first_step"]),
+            "median_gain_total": _median(fitted["gain_total"]),
+            "tolerance_scan": {f"{tolerance:g}": {str(k): n for k, n in counts.items()}
+                               for tolerance, counts in scan.items()},
             "stability": stability_report(table, between),
             "failures": errors,
             "elapsed_s": round(time.time() - start),
         }
+        if label is not None:
+            summary[f"by_{label}"] = json.loads(neuron_gmm.label_summary(table, label).round(3)
+                                                .to_json(orient="records"))
         with open(outdir / "summary.json", "w") as handle:
             json.dump(summary, handle, indent=2)
         print(json.dumps({key: summary[key] for key in
                           ("n_neurons", "n_fitted", "n_failed", "n_components_counts", "n_underpowered",
                            "median_log_likelihood", "median_lateral_sd_um", "median_depth_sd_um",
+                           "median_gain_first_step", "median_gain_total", "tolerance_scan",
                            "stability")}, indent=2))
         print(f"   {side} done in {(time.time() - start) / 60:.1f} min; outputs in {outdir}")
 

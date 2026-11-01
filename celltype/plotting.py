@@ -10,8 +10,11 @@ Figures for the Clustering Stage
 Cluster 0 (outliers: neurons left in clusters below the minimum size) is shown as "out".
 
 Per-neuron GMM figures (celltype/neuron_gmm.py):
-  gmm_selection  chosen number of components per neuron and the held-out selection-score curve (relative to each neuron's best)
-  gmm_stability  within-neuron vs between-neuron mixture Wasserstein distances, vs synapse count and k
+  gmm_selection       chosen number of components per neuron and the held-out selection-score curve (relative to each neuron's best)
+  gmm_stability       within-neuron vs between-neuron mixture Wasserstein distances, vs synapse count and k
+  gmm_tolerance_scan  what the tolerance rule chooses at other tolerances, from the stored scores
+  gmm_labels          chosen number of components and total held-out gain by dataset label, and vs soma depth
+  gmm_depth_profiles  mean marginal density of the fitted mixtures along the depth offset, per dataset label
 
 Split-half diagnostics (celltype/split_half.py):
   split_half_distributions  split ranges per neuron, distributions of medians, endpoint baselines
@@ -31,6 +34,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from scipy.cluster.hierarchy import dendrogram
+from scipy.stats import spearmanr
 
 from .clustering import present_covariates
 from .config import LABEL_COLUMNS
@@ -410,3 +414,107 @@ def plot_gmm_stability(fits, between, path):
     axes[2].set_title("median and IQR over neurons", fontsize=9)
     fig.tight_layout()
     _save(fig, path)
+
+
+def plot_gmm_tolerance_scan(scan, path, used=None):
+    """Stacked fractions of neurons per chosen number of components at each tolerance of a
+    ``neuron_gmm.tolerance_scan`` (``{tolerance: {k: neurons}}``); ``used`` marks the run's tolerance."""
+    scan = {float(t): {int(k): int(n) for k, n in counts.items()} for t, counts in scan.items()}
+    tolerances = sorted(scan)
+    ks = sorted({k for counts in scan.values() for k in counts})
+    fig, ax = plt.subplots(figsize=(max(5.0, 0.9 * len(tolerances) + 2.5), 4))
+    bottom = np.zeros(len(tolerances))
+    cmap = plt.get_cmap("viridis", max(len(ks), 1))
+    totals = np.array([sum(scan[t].values()) for t in tolerances], dtype=float)
+    for j, k in enumerate(ks):
+        count = np.array([scan[t].get(k, 0) for t in tolerances], dtype=float)
+        fraction = np.divide(count, totals, out=np.zeros_like(count), where=totals > 0)
+        ax.bar(range(len(tolerances)), fraction, bottom=bottom, width=0.7, color=cmap(j), label=f"k={k}")
+        bottom += fraction
+    ax.set_xticks(range(len(tolerances)))
+    ax.set_xticklabels([f"{t:g}" + ("\n(used)" if used is not None and np.isclose(t, used) else "")
+                        for t in tolerances])
+    ax.set_xlabel("selection tolerance (units of the selection score)")
+    ax.set_ylabel("fraction of neurons")
+    ax.set_title("number of components the tolerance rule would choose", fontsize=9)
+    ax.legend(fontsize=7, loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False)
+    fig.tight_layout()
+    _save(fig, path)
+
+
+def _label_order(table, column):
+    """Label values ordered by their neurons' median soma depth (pia-side first)."""
+    return table.groupby(column)["soma_depth_um"].median().sort_values().index.tolist()
+
+
+def plot_gmm_labels(table, column, path):
+    """Per dataset label (a column of ``fits_table``, ordered by median soma depth): the chosen number
+    of components and the total held-out gain over the smallest candidate (dots: neurons, red: median),
+    and the chosen number against soma depth with its Spearman correlation. False when the column is
+    missing or empty. Descriptive: the labels play no part in the fits."""
+    if column not in table:
+        return False
+    fitted = table[table["n_components"].notna() & table[column].notna()]
+    if fitted.empty:
+        return False
+    order = _label_order(fitted, column)
+    rng = np.random.default_rng(0)
+    fig, axes = plt.subplots(1, 3, figsize=(16, 4.4))
+    panels = ((axes[0], "n_components", "chosen number of components"),
+              (axes[1], "gain_total", "held-out gain of the best candidate\nover the smallest (score units)"))
+    for ax, value, label in panels:
+        for i, name in enumerate(order):
+            y = fitted.loc[fitted[column] == name, value].to_numpy(dtype=float)
+            ax.scatter(i + rng.uniform(-0.25, 0.25, y.size), y, s=6, alpha=0.3, color="k")
+            if np.isfinite(y).any():
+                ax.plot([i - 0.3, i + 0.3], [np.nanmedian(y)] * 2, color="C3", linewidth=2)
+        ax.set_xticks(range(len(order)))
+        ax.set_xticklabels([f"{name}\n{int((fitted[column] == name).sum())}" for name in order], fontsize=7)
+        ax.set_ylabel(label)
+        ax.set_title(f"by dataset {column}, ordered by median soma depth", fontsize=9)
+    depth = fitted["soma_depth_um"].to_numpy(dtype=float)
+    k = fitted["n_components"].to_numpy(dtype=float)
+    axes[2].scatter(depth, k, s=6, alpha=0.3, color="k")
+    if len(fitted) > 2 and np.std(depth) > 0 and np.std(k) > 0:
+        axes[2].set_title(f"Spearman correlation {spearmanr(depth, k)[0]:.2f}", fontsize=9)
+    axes[2].set_xlabel("soma depth (um)")
+    axes[2].set_ylabel("chosen number of components")
+    fig.tight_layout()
+    _save(fig, path)
+    return True
+
+
+def plot_gmm_depth_profiles(fits, table, column, path, min_count=5):
+    """One panel per dataset label with at least ``min_count`` fitted neurons (ordered by median soma
+    depth): the mean over its neurons of the fitted mixture's marginal density along the depth offset
+    (negative = towards the pia, drawn upwards; dashed line: the soma). Every profile integrates to
+    one and the panels share the density axis, so a compact cloud shows as a higher peak. ``fits``
+    and ``table`` are in the same order. False when nothing can be drawn."""
+    if column not in table:
+        return False
+    rows = [(fit, label) for fit, label in zip(fits, table[column]) if fit is not None and pd.notna(label)]
+    counts = pd.Series([label for _, label in rows]).value_counts() if rows else pd.Series(dtype=int)
+    order = [name for name in _label_order(table[table[column].notna()], column) if counts.get(name, 0) >= min_count]
+    if not order:
+        return False
+    centres = np.concatenate([fit.means[:, 2] for fit, _ in rows])
+    sds = np.sqrt(np.concatenate([fit.covariances[:, 2, 2] for fit, _ in rows]))
+    grid = np.linspace(np.percentile(centres - 3 * sds, 2), np.percentile(centres + 3 * sds, 98), 400)
+    fig, axes = plt.subplots(1, len(order), figsize=(1.6 * len(order) + 1.5, 5), sharex=True, sharey=True,
+                             squeeze=False)
+    for ax, name in zip(axes[0], order):
+        profile = np.zeros_like(grid)
+        members = [fit for fit, label in rows if label == name]
+        for fit in members:
+            mu, sd = fit.means[:, 2][:, None], np.sqrt(fit.covariances[:, 2, 2])[:, None]
+            profile += fit.weights @ (np.exp(-0.5 * ((grid[None, :] - mu) / sd) ** 2) / (sd * np.sqrt(2 * np.pi)))
+        ax.plot(profile / len(members), grid, color="k")
+        ax.axhline(0, color="0.5", linestyle="--", linewidth=1)
+        ax.set_title(f"{name}\n{len(members)} neurons", fontsize=8)
+        ax.set_xticks([])
+    axes[0, 0].invert_yaxis()
+    axes[0, 0].set_ylabel("depth offset from the soma (um); pia upwards")
+    fig.suptitle(f"mean marginal density of the fitted mixtures along depth, by dataset {column}", fontsize=9)
+    fig.tight_layout()
+    _save(fig, path)
+    return True

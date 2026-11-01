@@ -93,6 +93,7 @@ SELECTION_SCORES = ("loglik", "bic")   # held-out score that chooses the number 
 MIN_REPEATS = 6
 STABILITY_COLUMNS = ("w2_within_median", "w2_within_max", "w2_to_final_mean", "spread_um",
                      "w2_within_rel", "n_stability_models", "w2_rerun_median", "rerun_k_agreement")
+GAIN_COLUMNS = ("gain_first_step", "gain_total", "gain_beyond_chosen")   # see selection_gains
 
 _modules = None
 
@@ -463,10 +464,75 @@ def choose_k(candidates, scores, tolerance=0.0):
         by_test, p_values, test_rule = lowest, None, f"lowest mean held-out score ({error})"
     if tolerance <= 0:
         return by_test, p_values, test_rule + note
-    within = min(k for k, mean in zip(kept_k, means) if mean - means.min() <= tolerance)
+    within = k_within_tolerance(candidates, scores, tolerance)
     rule = (f"tolerance {tolerance:g}: k={within} is the smallest whose mean held-out score is within it "
             f"of the lowest mean (k={lowest}); as a diagnostic, {test_rule} would choose k={by_test}")
     return within, p_values, rule + note
+
+
+def _usable_means(candidates, scores):
+    """``(kept_k, means, rows)``: the candidates with enough valid fits and their mean scores over
+    the repetitions valid for all of them (``usable_repeats``); empty when none is usable."""
+    scores = np.asarray(scores, dtype=float)
+    kept, rows = usable_repeats(candidates, scores)
+    if not kept:
+        return [], np.array([]), rows
+    return [int(candidates[i]) for i in kept], scores[np.ix_(kept, rows)].mean(axis=1), rows
+
+
+def k_within_tolerance(candidates, scores, tolerance):
+    """The tolerance rule alone: the smallest candidate whose mean score over the usable
+    repetitions is within ``tolerance`` of the lowest mean. At 0 that is the lowest mean itself;
+    the paired test is not consulted. None when no candidate is usable."""
+    if tolerance < 0:
+        raise ValueError("tolerance must be >= 0")
+    kept_k, means, _ = _usable_means(candidates, scores)
+    if not kept_k:
+        return None
+    return min(k for k, mean in zip(kept_k, means) if mean - means.min() <= tolerance)
+
+
+def selection_scores(selection):
+    """The (candidates, repetitions) score matrix a selection record was decided on, lower is better:
+    the held-out BIC, or minus the normalised held-out log-likelihood."""
+    if selection.get("select_by", "bic") == "bic":
+        return np.asarray(selection["test_bic"], dtype=float)
+    return -np.asarray(selection["test_log_likelihood"], dtype=float)
+
+
+def selection_gains(fit):
+    """Held-out gains of a ``NeuronGMM`` in the units of its selection score (nats per synapse for
+    ``loglik``, BIC units for ``bic``), from the mean scores over the usable repetitions:
+    ``gain_first_step`` between the two smallest usable candidates (how much the first extra
+    components buy), ``gain_total`` from the smallest usable candidate to the best candidate's
+    mean, ``gain_beyond_chosen`` from the chosen k to that best (at most the tolerance when one
+    was used). NaN where the candidates needed are not usable."""
+    kept_k, means, _ = _usable_means(fit.selection["candidates"], selection_scores(fit.selection))
+    nan = float("nan")
+    if not kept_k:
+        return dict.fromkeys(GAIN_COLUMNS, nan)
+    lowest = float(means.min())
+    chosen = float(means[kept_k.index(fit.k)]) if fit.k in kept_k else nan
+    return {"gain_first_step": float(means[0] - means[1]) if len(kept_k) > 1 else nan,
+            "gain_total": float(means[0] - lowest), "gain_beyond_chosen": chosen - lowest}
+
+
+def tolerance_scan(fits, tolerances):
+    """``{tolerance: {k: neurons}}``: what the tolerance rule alone would choose for every fitted
+    neuron at each tolerance, from the stored held-out scores (no refitting). The chosen numbers
+    of a run with a tolerance are those at that tolerance; at 0 the rule takes the lowest mean,
+    which is not the paired test's choice."""
+    scan = {}
+    for tolerance in tolerances:
+        counts = {}
+        for fit in fits:
+            if fit is None:
+                continue
+            k = k_within_tolerance(fit.selection["candidates"], selection_scores(fit.selection), tolerance)
+            if k is not None:
+                counts[k] = counts.get(k, 0) + 1
+        scan[float(tolerance)] = dict(sorted(counts.items()))
+    return scan
 
 
 def _select_once(arranged, weight, k_values, rng, method, n_repeats, max_synapses, test_fraction,
@@ -649,11 +715,13 @@ def fits_table(fits, clouds, indices):
         if fit is None:
             row.update(n_components=np.nan, n_fitted=0, log_likelihood=np.nan, bic=np.nan, candidates="",
                        lateral_sd_um=np.nan, depth_sd_um=np.nan, depth_centre_um=np.nan,
+                       **dict.fromkeys(GAIN_COLUMNS, np.nan),
                        **{**dict.fromkeys(STABILITY_COLUMNS, np.nan), "n_stability_models": 0})
         else:
             stability, rerun = fit.stability, fit.stability.get("rerun")
             row.update(n_components=fit.k, n_fitted=fit.n_synapses, log_likelihood=fit.log_likelihood, bic=fit.bic,
                        candidates="-".join(map(str, fit.selection["candidates"])), **fit.summary(),
+                       **selection_gains(fit),
                        w2_within_median=stability.get("within_median", np.nan),
                        w2_within_max=stability.get("within_max", np.nan),
                        w2_to_final_mean=stability.get("to_final_mean", np.nan),
@@ -664,6 +732,19 @@ def fits_table(fits, clouds, indices):
                        rerun_k_agreement=rerun["k_agreement"] if rerun else np.nan)
         rows.append(row)
     return pd.DataFrame(rows)
+
+
+def label_summary(table, column):
+    """Per value of a label column of ``fits_table``: neurons and the medians of soma depth, chosen
+    number of components, held-out gains, depth centre and spread, lateral spread and within-neuron
+    distance, ordered by median soma depth. Descriptive only: the labels play no part in the fits."""
+    fitted = table[table["n_components"].notna() & table[column].notna()]
+    columns = ["soma_depth_um", "n_components", "gain_first_step", "gain_total", "depth_centre_um",
+               "depth_sd_um", "lateral_sd_um", "w2_within_median"]
+    groups = fitted.groupby(column)
+    out = groups[columns].median()
+    out.insert(0, "n", groups.size())
+    return out.sort_values("soma_depth_um").reset_index()
 
 
 def save_fits(path, fits, cell_ids, options):

@@ -572,6 +572,39 @@ def test_select_and_fit_recovers_two_depth_components():
     assert max(starts.stability["rerun"]["within"]) < 1 and starts.stability["rerun"]["k"] == [2, 2, 2]
 
 
+def test_tolerance_rule_scan_and_gains():
+    from celltype import neuron_gmm
+
+    # Held-out losses falling by 0.3, 0.05 and 0.02 at the successive candidates (8 repetitions).
+    loss = np.array([[1.0], [0.7], [0.65], [0.63]]) + 0.01 * np.arange(8)
+    assert neuron_gmm.k_within_tolerance([1, 3, 5, 7], loss, 0.0) == 7
+    assert neuron_gmm.k_within_tolerance([1, 3, 5, 7], loss, 0.03) == 5
+    assert neuron_gmm.k_within_tolerance([1, 3, 5, 7], loss, 0.1) == 3
+    assert neuron_gmm.k_within_tolerance([1, 3, 5, 7], loss, 1.0) == 1
+    with pytest.raises(ValueError):
+        neuron_gmm.k_within_tolerance([1, 3], loss[:2], -0.1)
+    assert neuron_gmm.k_within_tolerance([1, 3], np.full((2, 8), np.nan), 0.1) is None
+    # The same record as a loglik selection: the scores are minus the stored log-likelihoods.
+    selection = {"candidates": [1, 3, 5, 7], "select_by": "loglik",
+                 "test_log_likelihood": (-loss).tolist(), "test_bic": loss.tolist()}
+    assert np.allclose(neuron_gmm.selection_scores(selection), loss)
+    assert np.allclose(neuron_gmm.selection_scores({**selection, "select_by": "bic"}), loss)
+    fit = neuron_gmm.NeuronGMM(method="diagonal", k=3, weights=np.ones(3) / 3, means=np.zeros((3, 3)),
+                               covariances=np.array([np.eye(3)] * 3), n_synapses=100, log_likelihood=-1.0,
+                               bic=1.0, selection=selection)
+    assert neuron_gmm.selection_gains(fit) == pytest.approx(
+        {"gain_first_step": 0.3, "gain_total": 0.37, "gain_beyond_chosen": 0.07})
+    assert neuron_gmm.tolerance_scan([fit, None, fit], [0.0, 0.1]) == {0.0: {7: 2}, 0.1: {3: 2}}
+    # A single usable candidate: no first step, nothing beyond the chosen number.
+    single = neuron_gmm.NeuronGMM(method="diagonal", k=1, weights=np.ones(1), means=np.zeros((1, 3)),
+                                  covariances=np.array([np.eye(3)]), n_synapses=100, log_likelihood=-1.0,
+                                  bic=1.0, selection={**selection, "candidates": [1],
+                                                      "test_log_likelihood": (-loss[:1]).tolist(),
+                                                      "test_bic": loss[:1].tolist()})
+    gains = neuron_gmm.selection_gains(single)
+    assert np.isnan(gains["gain_first_step"]) and gains["gain_total"] == 0 and gains["gain_beyond_chosen"] == 0
+
+
 @needs_mixture
 def test_fit_neurons_table_and_files(tmp_path, monkeypatch):
     from celltype import neuron_gmm
@@ -589,6 +622,13 @@ def test_fit_neurons_table_and_files(tmp_path, monkeypatch):
     assert len(table) == 9 and {"pt_root_id", "cell_type", "n_components", "bic", "lateral_sd_um"} <= set(table)
     assert (table["n_components"] == 1).all()
     assert set(neuron_gmm.STABILITY_COLUMNS) <= set(table)
+    # One candidate only: no first step, nothing beyond the chosen number, the scan is flat.
+    assert set(neuron_gmm.GAIN_COLUMNS) <= set(table) and table["gain_first_step"].isna().all()
+    assert (table["gain_total"] == 0).all() and (table["gain_beyond_chosen"] == 0).all()
+    assert neuron_gmm.tolerance_scan(fits, [0.0, 0.5]) == {0.0: {1: 9}, 0.5: {1: 9}}
+    by_label = neuron_gmm.label_summary(table, "cell_type")
+    assert set(by_label["cell_type"]) == {"a", "b", "c"} and by_label["n"].tolist() == [3, 3, 3]
+    assert by_label["soma_depth_um"].is_monotonic_increasing and (by_label["n_components"] == 1).all()
     assert np.allclose(table["lateral_sd_um"], 15.0, atol=4)
     # One Gaussian refitted on 120-synapse subsamples moves by a few um, far below its 26 um spread.
     assert (table["n_stability_models"] == 6).all() and table["w2_within_median"].between(0.5, 10).all()
@@ -616,3 +656,10 @@ def test_fit_neurons_table_and_files(tmp_path, monkeypatch):
     plotting.plot_gmm_selection(fits, tmp_path / "selection.png")
     plotting.plot_gmm_stability(fits, between["w2_repeat"], tmp_path / "stability.png")
     assert (tmp_path / "selection.png").exists() and (tmp_path / "stability.png").exists()
+    plotting.plot_gmm_tolerance_scan({0.0: {1: 9}, 0.5: {1: 9}}, tmp_path / "scan.png", used=0.0)
+    assert plotting.plot_gmm_labels(table, "cell_type", tmp_path / "labels.png")
+    assert plotting.plot_gmm_depth_profiles(fits, table, "cell_type", tmp_path / "profiles.png", min_count=3)
+    assert not plotting.plot_gmm_labels(table, "absent", tmp_path / "none.png")
+    assert not plotting.plot_gmm_depth_profiles(fits, table, "cell_type", tmp_path / "none.png", min_count=4)
+    assert all((tmp_path / name).exists() for name in ("scan.png", "labels.png", "profiles.png"))
+    assert not (tmp_path / "none.png").exists()
