@@ -232,13 +232,13 @@ def plot_split_half_pairs(strata, effects, coverage, path):
 def plot_tree_heatmap(tree, distance, table, labels, k, path, title):
     fig = plt.figure(figsize=(11, 12))
     ax_tree = fig.add_axes([0.14, 0.80, 0.74, 0.15])
-    leaves = dendrogram(tree, ax=ax_tree, no_labels=True, color_threshold=None,
+    leaves = dendrogram(tree, ax=ax_tree, no_labels=True, color_threshold=0,
                         above_threshold_color="0.3")["leaves"]
     ax_tree.set_axis_off()
     ax_tree.set_title(title)
 
     barcodes = (("dataset cell_type", table["cell_type"].to_numpy()),
-                (f"cluster (k={k})", _cluster_names(labels)))
+                (f"consensus (k={k})", _cluster_names(labels)))
     for row, (name, values) in enumerate(barcodes):
         colors = _category_colors(values)
         ax_bar = fig.add_axes([0.14, 0.775 - 0.025 * row, 0.74, 0.02])
@@ -261,9 +261,9 @@ def plot_tree_heatmap(tree, distance, table, labels, k, path, title):
     _save(fig, path)
 
 
-def plot_k_curves(stab, ambiguity, agreement, chosen_k, path):
+def plot_k_curves(stab, ambiguity, agreement, chosen_k, path, *, n_outliers, pac_all_pairs):
     k_values = sorted(stab)
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
+    fig, axes = plt.subplots(1, 4, figsize=(18, 4.5))
     rng = np.random.default_rng(0)
     for k in k_values:
         axes[0].scatter(k + rng.uniform(-0.15, 0.15, stab[k].size), stab[k],
@@ -274,12 +274,16 @@ def plot_k_curves(stab, ambiguity, agreement, chosen_k, path):
     axes[0].plot(k_values, median, marker="o", color="C0", zorder=2, label="median (band: IQR)")
     axes[0].set_ylim(min(-0.05, axes[0].get_ylim()[0]), 1.05)
     axes[0].set_ylabel("ARI(replicate, consensus)")
-    axes[0].set_title("Bootstrap stability (dots: replicates)")
+    axes[0].set_title("ARI on consensus inliers\n(replicate label 0 retained)")
     axes[0].legend(fontsize=8, loc="lower left")
 
-    axes[1].plot(k_values, [ambiguity[k] for k in k_values], marker="o", color="C3")
-    axes[1].set_ylabel("PAC (pairs with 0.1 < co-clustering < 0.9)")
-    axes[1].set_title("Ambiguity (lower = more stable)")
+    axes[1].plot(k_values, [ambiguity[k] for k in k_values], marker="o", color="C3",
+                 label="Consensus inlier pairs (selection)")
+    axes[1].plot(k_values, [pac_all_pairs[k] for k in k_values], ls="--", color="0.5",
+                 label="All pairs (diagnostic)")
+    axes[1].set_ylabel("PAC (0.1 < co-clustering < 0.9)")
+    axes[1].set_title("Ambiguity; compare with coverage")
+    axes[1].legend(fontsize=7)
 
     for column in LABEL_COLUMNS:
         axes[2].plot(k_values, [agreement[column][k]["ami"] for k in k_values],
@@ -287,6 +291,9 @@ def plot_k_curves(stab, ambiguity, agreement, chosen_k, path):
     axes[2].set_ylabel("AMI with dataset labels")
     axes[2].set_title("Agreement with existing labels")
     axes[2].legend(fontsize=8)
+    axes[3].plot(k_values, [n_outliers[k] for k in k_values], marker="o", color="C4")
+    axes[3].set(ylabel="Number of consensus outliers", title="Neurons excluded at each k")
+    axes[3].set_ylim(bottom=0)
     for ax in axes:
         ax.axvline(chosen_k, color="0.6", ls="--")
         ax.set_xlabel("number of clusters k")
@@ -347,14 +354,22 @@ def plot_contingency(table, labels, path):
 def plot_covariates(table, labels, path):
     """Covariates per cluster."""
     columns = present_covariates(table)
+    if not columns:
+        fig, ax = plt.subplots(figsize=(6, 3))
+        ax.text(0.5, 0.5, "No varying covariates", ha="center", va="center")
+        ax.set_axis_off()
+        _save(fig, path)
+        return
     clusters = np.unique(labels)
     fig, axes = plt.subplots(len(columns), 1, sharex=True,
                              figsize=(max(6, 0.6 * clusters.size), 2.6 * len(columns)))
     axes = np.atleast_1d(axes)
     for ax, column in zip(axes, columns):
         ax.boxplot([table[column][labels == c] for c in clusters],
-                   tick_labels=_cluster_names(clusters), showfliers=False)
+                   tick_labels=_cluster_names(clusters), showfliers=True)
         ax.set_ylabel(column)
+        if column == "mean_border_weight":
+            ax.set_title(f"{int((table[column] == 1).sum())}/{len(table)} neurons have mean weight exactly 1")
         if column == "n_synapses":
             ax.set_yscale("log")
         if column == "soma_depth_um":

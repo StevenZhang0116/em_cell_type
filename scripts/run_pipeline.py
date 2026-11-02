@@ -82,7 +82,7 @@ def main(argv=None):
                         help="neurons with fewer synapses are excluded")
     parser.add_argument("--min-border-distance", type=float, default=0.0,
                         help="exclude neurons whose soma is closer than this (um) to the volume "
-                             "border, whose arbors are truncated (default 0: keep all)")
+                             "border; this does not guarantee complete arbors (default 0: keep all)")
     parser.add_argument("--n-neurons", type=int, default=None,
                         help="cluster only this many randomly chosen neurons per side (default: all)")
     parser.add_argument("--no-weights", action="store_true",
@@ -95,14 +95,15 @@ def main(argv=None):
                         help="[validate] outer splits; --n-reps sets the inner bootstrap count per half")
     # Stage C
     parser.add_argument("--linkage", choices=("average", "complete"), default="average")
-    parser.add_argument("--k-min", type=int, default=2)
+    parser.add_argument("--k-min", type=int, default=2,
+                        help="lower end of both the reported and automatic-selection k range (default 2)")
     parser.add_argument("--k-max", type=int, default=20)
     parser.add_argument("--min-cluster-size", type=int, default=5,
                         help="clusters smaller than this are labelled outliers (cluster 0) "
                              "and do not count towards k")
     parser.add_argument("--k", type=int, default=None,
                         help="fixed consensus k for validation and Stage C "
-                             "(default: most stable k >= 3, falling back to reachable k)")
+                             "(default: ARI/PAC selection over reachable --k-min through --k-max)")
     args = parser.parse_args(argv)
     if args.n_reps < 1 or args.k_min < 2 or args.k_max < args.k_min or args.min_cluster_size < 1:
         parser.error("need --n-reps >= 1, 2 <= --k-min <= --k-max and --min-cluster-size >= 1")

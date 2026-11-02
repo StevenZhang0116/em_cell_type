@@ -27,7 +27,7 @@ VERSION = 1
 # Settings that make two validation runs incompatible. The half sizes and the
 # number of outer splits may grow (new splits are appended to the m files);
 # every other option must match for the saved splits to be reused.
-IDENTITY = ("version", "dataset", "side", "source", "cell_ids", "full_params", "inner_reps",
+IDENTITY = ("version", "estimator_version", "dataset", "side", "source", "cell_ids", "full_params", "inner_reps",
             "seed", "use_weights", "linkage", "min_cluster_size", "k", "k_values")
 
 
@@ -50,7 +50,10 @@ def fit_record(fit):
             "k_selection": fit["k_selection"], "k_reached": fit["reached"],
             "stability_ari": {str(k): clustering.stability_summary(v)
                               for k, v in fit["stability"].items()},
-            "pac": {str(k): float(v) if np.isfinite(v) else None for k, v in fit["pac"].items()}}
+            "pac": {str(k): float(v) if np.isfinite(v) else None for k, v in fit["pac"].items()},
+            "pac_all_pairs": {str(k): float(v) if np.isfinite(v) else None
+                              for k, v in fit["pac_all_pairs"].items()},
+            "n_outliers": {str(k): v for k, v in fit["n_outliers"].items()}}
 
 
 def heldout_separation(distance_b, labels_a):
@@ -128,7 +131,7 @@ def fit_split(a, b, *, n_reps, seed, n_jobs, linkage, k_values, min_cluster_size
         distance_b = pairwise(b, n_jobs)
         fit_b = {"status": "not_run_a_failed", "chosen_k": None, "labels": np.zeros(len(b), dtype=int),
                  "k_selection": {"rule": "A did not reach k", "chosen": None}, "reached": [],
-                 "stability": {}, "pac": {}}
+                 "stability": {}, "pac": {}, "pac_all_pairs": {}, "n_outliers": {}}
     metrics, matches = compare_halves(fit_a["labels"], fit_b["labels"], distance_b,
                                      status_a=fit_a["status"], status_b=fit_b["status"])
     return {"distance_a": distance_a, "distance_b": distance_b,

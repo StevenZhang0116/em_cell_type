@@ -174,7 +174,14 @@ def test_pipeline_stages_b_and_c_end_to_end(tmp_path, monkeypatch):
     assert (outdir / "co_clustering.png").exists()
     # The clustered distance is the exact matrix of the complete clouds, not the replicate mean.
     with open(outdir / "summary.json") as handle:
-        assert json.load(handle)["distance_matrix"] == "exact"
+        summary = json.load(handle)
+    assert summary["distance_matrix"] == "exact"
+    assert summary["estimator_version"] == clustering.VERSION
+    assert {"2", "3"} <= summary["cluster_sizes_by_k"].keys()
+    comparison = pd.read_csv(outdir / "k_summary.csv").set_index("k")
+    assert comparison.loc[3, "selected"] and comparison.loc[3, "coverage"] == 1
+    assert comparison.loc[3, "pac"] == summary["pac"]["3"]
+    assert comparison.loc[3, "pac_all_pairs"] == summary["pac_all_pairs"]["3"]
     with np.load(config.distance_dir("toy", "axon") / "exact.npz") as data:
         exact = data["distance"]
         assert list(data["n_synapses"]) == [150] * 9
@@ -256,6 +263,10 @@ def test_cluster_is_current_tracks_parameters_and_replicate_files(tmp_path, monk
     outdir.mkdir(parents=True, exist_ok=True)
     with open(outdir / "summary.json", "w") as handle:
         json.dump({"run": {"dataset": "toy", "side": "axon", **params}, "n_replicates": 2}, handle)
+    assert pipeline.cluster_is_current("toy", "axon", params) is False  # old estimator
+    summary = json.loads((outdir / "summary.json").read_text())
+    summary["estimator_version"] = clustering.VERSION
+    (outdir / "summary.json").write_text(json.dumps(summary))
     assert pipeline.cluster_is_current("toy", "axon", params) is True
     assert pipeline.cluster_is_current("toy", "axon", {**params, "k": 3}) is False
     assert pipeline.cluster_is_current("toy", "axon", {**params, "n_reps": 1}) is False
@@ -323,9 +334,24 @@ def test_most_stable_k_prefers_the_largest_k_within_tolerance():
             6: np.full(5, 0.60), 7: np.full(5, np.nan)}
     pac = {2: 0.1, 3: 0.20, 4: 0.21, 5: 0.40, 6: 0.2, 7: float("nan")}
     k, rationale = clustering.most_stable_k(stab, pac)
+    assert k == 2 and rationale["k_min"] == 2
+    assert rationale["candidates"] == [2, 3, 4, 5, 6]
+    k, rationale = clustering.most_stable_k(stab, pac, k_min=3)
     # 3, 4, 5 are within 0.03 of the best ARI; 5 is too ambiguous; the largest of the rest is 4.
     assert k == 4 and rationale["within_ari_tolerance"] == [3, 4, 5]
     assert rationale["best_median_ari"] == pytest.approx(0.80)
+
+
+def test_consensus_pac_is_not_diluted_by_rejected_neurons():
+    labels = [np.array([1, 1, 1, 2, 2, 2]), np.array([1, 1, 2, 2, 2, 2])]
+    base = [{2: x} for x in labels]
+    padded = [{2: np.r_[x, np.zeros(10, dtype=int)]} for x in labels]
+    _, baseline = clustering.consensus_clustering(base, [2], "average", 2)
+    consensus, corrected = clustering.consensus_clustering(padded, [2], "average", 2)
+    assert (consensus[2] == 0).sum() == 10
+    assert corrected[2] == pytest.approx(baseline[2]) and corrected[2] > 0
+    assert clustering.pac(clustering.co_clustering(padded, 2)) < corrected[2]
+    assert np.isnan(clustering.pac(np.ones((1, 1))))
 
 
 def test_consensus_and_stability_on_agreeing_replicates():

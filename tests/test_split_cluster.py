@@ -224,6 +224,16 @@ def test_validation_uses_main_selection_and_cap(clouds, monkeypatch):
     pipeline.validate_neurons("microns", "dendrite", points_per_half=[12, 8], outer_reps=1, params=params)
 
 
+def test_changed_estimator_does_not_resume_old_validation(clouds, monkeypatch):
+    pipeline.validate_neurons("microns", "dendrite", points_per_half=[8], outer_reps=1, params=_params())
+    monkeypatch.setattr(clustering, "VERSION", clustering.VERSION + 1)
+    def refit_required(*args, **kwargs):
+        raise RuntimeError("new estimator must refit")
+    monkeypatch.setattr(split_cluster, "fit_split", refit_required)
+    with pytest.raises(RuntimeError, match="new estimator must refit"):
+        pipeline.validate_neurons("microns", "dendrite", points_per_half=[8], outer_reps=1, params=_params())
+
+
 def test_known_stale_distance_source_is_rejected(clouds):
     directory = config.distance_dir("microns", "dendrite")
     np.savez(directory / "rep000.npz", source_sha256="old-source", cell_ids=clouds.cell_ids)
@@ -266,6 +276,12 @@ def test_cli_validate_then_full_fit(clouds):
     assert summary["full_fit"]["status"] == "compatible" and summary["full_fit"]["k_full"] == full["chosen_k"] == 3
     assert full["cell_ids"] == summary["options"]["cell_ids"]
     assert summary["full_fit"]["k_full_selection_frequency_by_m"]["8"] == {"count": 1, "n_splits": 1}
+    # Revised full fits must not inherit validation under the historical selection/PAC rule.
+    full["estimator_version"] = clustering.VERSION - 1
+    (config.cluster_dir("microns", "dendrite") / "summary.json").write_text(json.dumps(full))
+    pipeline.compare_validation_to_full(path.parent, "microns", "dendrite")
+    assert json.loads(path.read_text())["full_fit"]["status"] == "estimator_mismatch"
+    full["estimator_version"] = clustering.VERSION
     # A legacy full fit cannot silently inherit validation provenance.
     full.pop("source_sha256")
     (config.cluster_dir("microns", "dendrite") / "summary.json").write_text(json.dumps(full))

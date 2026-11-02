@@ -15,7 +15,7 @@ Works on the bootstrap replicates of one side:
    geometry, which Wasserstein distances do not satisfy.
 3. Consensus -- the co-clustering matrix (fraction of replicates that put two
    neurons in the same major cluster) is clustered again the same way; these
-   are the reported labels. PAC, the fraction of neuron pairs whose
+   are the reported labels. PAC, the fraction of consensus non-outlier pairs whose
    co-clustering lies strictly between 0.1 and 0.9, measures ambiguity
    (lower is more stable).
 4. Stability -- per replicate, the adjusted Rand index (ARI) against the
@@ -37,6 +37,9 @@ from scipy.stats import kruskal, spearmanr
 from sklearn.metrics import adjusted_mutual_info_score, adjusted_rand_score
 
 from .config import COVARIATE_COLUMNS, LABEL_COLUMNS
+
+
+VERSION = 2  # Candidate range includes k=2; PAC uses consensus non-outlier pairs.
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +92,8 @@ def neuron_table(clouds, eligible):
 
 
 def present_covariates(table):
-    return [column for column in COVARIATE_COLUMNS if column in table]
+    return [column for column in COVARIATE_COLUMNS
+            if column in table and table[column].nunique() > 1]
 
 
 # ---------------------------------------------------------------------------
@@ -192,16 +196,21 @@ def co_clustering(replicate_labels, k):
 def pac(together, lower=0.1, upper=0.9):
     """Proportion of ambiguously clustered pairs."""
     values = together[np.triu_indices(together.shape[0], 1)]
-    return float(np.mean((values > lower) & (values < upper)))
+    return float(np.mean((values > lower) & (values < upper))) if values.size else float("nan")
 
 
 def consensus_clustering(replicate_labels, k_values, method, min_size):
-    """Consensus labels per k from the co-clustering matrix, plus PAC per k."""
+    """Consensus labels and PAC on that consensus's non-outlier pairs, per k.
+
+    Coverage changes with k; report it alongside PAC. Excluded neurons must
+    not lower PAC merely by contributing many zero co-clustering frequencies.
+    """
     consensus, ambiguity = {}, {}
     for k in k_values:
         together = co_clustering(replicate_labels, k)
         consensus[k] = cut_major(build_tree(1.0 - together, method), k, min_size)
-        ambiguity[k] = pac(together)
+        keep = consensus[k] > 0
+        ambiguity[k] = pac(together[np.ix_(keep, keep)])
     return consensus, ambiguity
 
 
@@ -210,6 +219,8 @@ def stability(replicate_labels, consensus, k_values):
 
     NaN when the consensus has fewer than k major clusters, so that k cannot
     look stable just because almost every neuron became an outlier.
+    Replicate label 0 is retained as one group on this fixed consensus cohort;
+    this is not the joint-inlier ARI used to compare the two validation halves.
     """
     result = {}
     for k in k_values:
@@ -231,10 +242,10 @@ def stability_summary(values):
             "mean": float(np.mean(values)), "values": [float(v) for v in values]}
 
 
-def most_stable_k(stab, ambiguity, k_min=3, ari_tolerance=0.03, pac_tolerance=0.05):
+def most_stable_k(stab, ambiguity, k_min=2, ari_tolerance=0.03, pac_tolerance=0.05):
     """Suggested k and the reasoning behind it.
 
-    Among valid k >= ``k_min`` (k=2 is trivially stable), keep those whose
+    Among valid k >= ``k_min`` (falling back to valid k if none reach it), keep those whose
     median ARI is within ``ari_tolerance`` of the best, then those whose PAC
     is within ``pac_tolerance`` of the lowest PAC in that set, and take the
     largest. This heuristic prefers resolution unless ambiguity rises; internal
@@ -247,8 +258,11 @@ def most_stable_k(stab, ambiguity, k_min=3, ari_tolerance=0.03, pac_tolerance=0.
     near = [k for k in candidates if medians[k] >= best - ari_tolerance]
     lowest_pac = min(ambiguity[k] for k in near)
     chosen = max(k for k in near if ambiguity[k] <= lowest_pac + pac_tolerance)
-    return chosen, {"rule": f"largest k with median ARI >= best - {ari_tolerance} and "
+    return chosen, {"rule": f"among reachable k >= {k_min} (fallback: all reachable k), largest k "
+                            f"with median ARI >= best - {ari_tolerance} and consensus-inlier "
                             f"PAC <= lowest PAC among those + {pac_tolerance}",
+                    "k_min": k_min, "candidates": candidates,
+                    "ari_tolerance": ari_tolerance, "pac_tolerance": pac_tolerance,
                     "best_median_ari": best, "within_ari_tolerance": near,
                     "lowest_pac_among_those": float(lowest_pac), "chosen": chosen}
 
@@ -272,6 +286,7 @@ def fit_consensus(matrices, method, k_values, min_size, k=None):
     values = [int(kk) for kk in values]
     cuts = replicate_cuts(matrices, method, values, min_size)
     consensus, ambiguity = consensus_clustering(cuts, values, method, min_size)
+    all_pairs = {kk: pac(co_clustering(cuts, kk)) for kk in values}
     stab = stability(cuts, consensus, values)
     reached = [kk for kk in values if not np.all(np.isnan(stab[kk]))]
     for kk in set(values) - set(reached):
@@ -279,13 +294,15 @@ def fit_consensus(matrices, method, k_values, min_size, k=None):
     if k is not None:
         chosen, selection = int(k), {"rule": "given on the command line", "chosen": int(k)}
     elif reached:
-        chosen, selection = most_stable_k(stab, ambiguity)
+        chosen, selection = most_stable_k(stab, ambiguity, k_min=min(values))
     else:
         chosen, selection = None, {"rule": "no reachable candidate k", "chosen": None}
     labels = np.zeros(matrices.shape[1], dtype=int) if chosen is None else consensus[chosen]
     status = "ok" if chosen in reached else "unreachable_k"
     return {"status": status, "chosen_k": chosen, "k_selection": selection, "reached": reached,
             "labels": labels, "consensus": consensus, "stability": stab, "pac": ambiguity,
+            "pac_all_pairs": all_pairs,
+            "n_outliers": {kk: int(np.sum(consensus[kk] == 0)) for kk in values},
             "co_clustering": None if chosen is None else co_clustering(cuts, chosen)}
 
 
@@ -332,7 +349,7 @@ def covariate_tests(table, labels):
     for column in present_covariates(table):
         groups = [table[column][labels == c] for c in np.unique(labels) if c > 0]
         groups = [g for g in groups if len(g) >= 2]
-        if len(groups) >= 2:
+        if len(groups) >= 2 and np.unique(np.concatenate(groups)).size > 1:
             statistic, p_value = kruskal(*groups)
             tests[column] = {"H": float(statistic), "p": float(p_value)}
     return tests

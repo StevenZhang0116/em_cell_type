@@ -15,7 +15,7 @@ afterwards.
 | A | `extract_clouds` | All synapses of each proofread neuron, regardless of partner type, as soma-centred offsets `(dx, dy, dz)` in um with border-compensation weights; lateral cutoff 250 um | `clouds_{axon,dendrite}.npz` |
 | validate (optional) | `validate_neurons` | Disjoint synapse halves of the same neuron cohort. A selects k using its internal bootstrap consensus; B independently refits consensus at A's k. Reports ARI with coverage, per-cluster overlap, and B distances grouped by A labels only. Points method only; see [split_cluster.md](split_cluster.md) | `trials/validate_<side>/` |
 | B | `compute_exact_distances`, `compute_distances` | `--method points`: the exact 2-Wasserstein distance between the complete soma-relative synapse clouds of two neurons, every synapse with its border-compensation weight as mass, solved as an optimal transport problem (so the in-plane direction of an arbor counts); written once as `exact.npz`. Then each bootstrap replicate: the same clouds with bootstrap multiplicities (n draws with replacement from a neuron's n synapses), giving a distance matrix plus each neuron's self-distance between two independent draws (noise floor). `--method shared`: MW2 between mixing weights over one shared Gaussian mixture per side (`fit_shared_model`), see below | `trials/dist_<side>/exact.npz`, `rep<b>.npz`; `trials/shared_<side>.npz` |
-| C | `cluster_neurons` | Each replicate is clustered (average linkage) into k major clusters of at least `--min-cluster-size` neurons, smaller clusters becoming outliers (cluster 0); the consensus labels come from clustering the co-clustering matrix. Reports per-replicate ARI against the consensus, PAC (ambiguity), AMI/ARI with dataset labels, confound checks (soma depth, synapse count, border weight, distance to border) | `trials/cluster_<side>/` |
+| C | `cluster_neurons` | Each replicate is clustered (average linkage) into k major clusters of at least `--min-cluster-size` neurons, smaller clusters becoming outliers (cluster 0); the consensus labels come from clustering the co-clustering matrix. Reports per-replicate ARI against the consensus, PAC on consensus non-outlier pairs, coverage, AMI/ARI with dataset labels, and covariate checks | `trials/cluster_<side>/` |
 
 ## Outputs and options
 
@@ -38,17 +38,30 @@ in one run and clustering in a later one still reclusters.
 - `--n-neurons K` clusters only K randomly chosen neurons per side (the same K neurons in
   every replicate).
 - `--min-border-distance` (um, default 0) excludes neurons whose soma is closer than this to
-  the volume border; their arbors are truncated and form spurious clusters. Median soma
-  distance to the border is about 170 to 200 um, so useful values are 50 to 100 um.
+  the volume border. It can reduce boundary exposure but does not guarantee complete
+  arbors. Its effect depends on the selected cohort; near-uniform compensation weights
+  likewise do not establish absence of truncation.
 - `--min-cluster-size` (default 5): clusters with fewer neurons are reported as outliers
   (cluster 0, "out" in figures) and do not count towards k.
-- The reported k (when `--k` is not given) is the largest k whose median per-replicate ARI is
+- `--k-min` (default 2) and `--k-max` define both the reported and automatic-selection
+  range. The reported k (when `--k` is not given) is the largest reachable k whose median per-replicate ARI is
   within 0.03 of the best and whose PAC is within 0.05 of the lowest PAC among those. This
   heuristic prefers resolution unless ambiguity rises; it does not establish discrete
-  biological types. Candidates >= 3 are preferred, with a fallback to reachable candidates.
-  The rule and its candidates are recorded under `k_selection` in `summary.json`.
+  biological types. There is no additional hidden lower bound of 3. The lower bound,
+  reachable candidates, tolerances and rule are recorded under `k_selection` in `summary.json`.
+  PAC uses pairs whose endpoints are consensus non-outliers at that k. The old all-pair
+  quantity is retained as `pac_all_pairs` for comparison only; rejection can make it
+  artificially small. Coverage still changes with k, so neither PAC nor ARI alone should
+  be interpreted as evidence for a true number of types. Internal stability ARI uses
+  consensus non-outlier neurons and retains replicate label 0 as one group; validation's
+  A/B ARI instead uses jointly accepted neurons.
   Full-cloud and split-half fits share `clustering.fit_consensus`. An unreachable fixed
   `--k` raises an error in Stage C and is recorded as a failure in validation.
+- Estimator version 2 removes the hidden k>=3 restriction and changes the PAC population.
+  Existing Stage-B distances remain reusable. Stage C regenerates its reports when the
+  estimator version changes, even with unchanged command-line parameters. Historical
+  validation is marked `estimator_mismatch` when compared with the revised full fit;
+  its saved split metrics are retained, not relabelled as validation of the new estimator.
 - `--stages` selects stages from `extract validate distances cluster`; execution follows
   that order regardless of argument order. The default is `extract distances cluster`;
   validation runs only when explicitly listed. Finished outputs are skipped unless
@@ -105,17 +118,46 @@ Rough totals on 10 CPUs for the exact matrix plus 10 replicates: 1000 axons abou
 few hundred neurons or with the cap. Stage A needs about 96 GB of memory, Stages B and C a
 few GB plus the cost matrices of the pairs in flight.
 
+`jobs/pipeline_dendrite.slurm` configures a 1000-neuron exploratory run: 64 CPUs,
+96 GB, a 5-day time limit, 20 full-fit bootstraps and 20 validation splits with
+20 inner bootstraps per half (500 synapses/half). It keeps all observed synapses
+and the existing eligibility thresholds. It first runs `distances cluster`,
+then `validate`, so the full-fit report is available before validation finishes.
+The 200-neuron log suggests roughly 75 hours for this configuration, assuming
+pair-count and CPU scaling; this is an extrapolation, not a measured 1000-neuron
+runtime. Use `TRIAL_REPS=50` via `sbatch --export=ALL,TRIAL_REPS=50` and allow
+more time if retaining the previous bootstrap count (see the job comments).
+
+At first submission, the job moves an existing different-size `trials/` run to
+`trials_<old size>/` (currently `trials_200/`), refusing to overwrite an archive.
+It then writes the 1000-neuron run to `trials/`. Subsequent submissions with the
+same settings resume completed matrices/splits. The 1000 neurons are selected
+afresh using the same seed and eligibility rules; the sample need not contain
+every neuron from the 200-neuron sample. Do not run both cohort sizes concurrently
+against the same `trials/` directory.
+
 ## Stage C outputs (`trials/cluster_<side>/`)
 
 | File | Content |
 |---|---|
 | `neurons.csv` | per neuron: covariates, dataset labels, consensus cluster for every reachable k (0 = outlier), self-distance, nearest-neighbour distance, co-clustering stability |
-| `summary.json` | which distance matrix was clustered (`distance_matrix`: `exact` or `replicate_mean`), noise floor, chosen k with the selection rule, cluster sizes, per-k stability (median, quartiles, per-replicate ARI), PAC, outlier counts, AMI/ARI with dataset labels, confound statistics (`dist_border_um` is the soma distance to the volume border); only k whose consensus reaches k major clusters are listed (`k_reached`) |
+| `summary.json` | estimator version, distance-matrix source, noise floor, explicit k-selection rule, cluster sizes at each reachable k, stability, both PAC populations, outlier counts, label agreement and covariate statistics |
+| `k_summary.csv` | one row per requested k, including k=2 and k=3 with the default lower bound: selection/reachability, outlier count, coverage, median stability ARI, both PAC populations and cell-type AMI |
 | `distance.npy` | the exact distance matrix of the complete clouds (points method) or the replicate mean (shared method) |
-| `k_curves.png` | per-replicate stability (dots, median, IQR), PAC and AMI with dataset labels vs k |
+| `k_curves.png` | per-replicate stability, both PAC populations, label AMI and consensus outlier counts vs k |
 | `co_clustering.png` | co-clustering matrix at the chosen k, sorted by consensus cluster |
-| `tree_heatmap.png` | dendrogram and heatmap of the clustered distance matrix (`distance.npy`) with cell_type and cluster barcodes |
-| `noise_floor.png`, `contingency.png`, `covariates.png` | self vs nearest-neighbour distance, cell_type x cluster counts, covariates per cluster |
+| `tree_heatmap.png` | monochrome dendrogram and heatmap of `distance.npy`, with dataset and consensus-label barcodes; this distance tree is not the consensus tree, and ordinary tree cuts need not match `cut_major` labels |
+| `noise_floor.png`, `contingency.png`, `covariates.png` | self vs nearest-neighbour distance, cell_type x cluster counts, varying covariates per cluster (including outlying values); the weight panel states how many neurons have mean weight exactly 1 |
+
+For the 200-neuron MICrONS dendrite cohort (seed 20261019, >=2000 synapses), the
+50-um border filter removes only 5 of 9966 count-qualified cells; 179/200 selected
+neurons have mean compensation weight exactly 1. These steps have little additional
+effect in this cohort. There are 174 excitatory and 26 inhibitory neurons; L5ET and
+NGC have 4 cells each and BPC has 1, below the minimum cluster size of 5. Failure to
+recover those as separate types is therefore not evidence against their existence.
+Vertical synapse profiles and soma depth are strongly associated with the observed
+distances; repeatability and label agreement do not establish discrete types or
+independence from anatomical gradients. Soma-relative orientation remains unchanged.
 
 ## Caveat
 

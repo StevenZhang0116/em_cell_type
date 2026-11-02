@@ -20,6 +20,7 @@ import json
 import time
 
 import numpy as np
+import pandas as pd
 import pyarrow as pa
 
 from . import clustering, plotting, shared, split_cluster
@@ -61,8 +62,8 @@ def extract_clouds(dataset, lateral_cutoff):
 def eligible_neurons(clouds, min_synapses, min_border_um=0.0):
     """Neurons with enough synapses whose soma is at least ``min_border_um`` from the volume border.
 
-    Border truncation cuts arbors and produces spurious clusters; ``dist_border``
-    is stored in nm, the threshold is given in um.
+    This filter can reduce boundary exposure but does not establish arbor
+    completeness. ``dist_border`` is stored in nm, the threshold is given in um.
     """
     keep = clouds.n_synapses >= min_synapses
     if min_border_um > 0:
@@ -134,6 +135,8 @@ def cluster_is_current(dataset, side, params):
         return False
     with open(path) as handle:
         summary = json.load(handle)
+    if summary.get("estimator_version") != clustering.VERSION:
+        return False
     run = summary.get("run", {})
     if any(run.get(key) != value for key, value in params.items()):
         return False
@@ -160,7 +163,8 @@ def validate_neurons(dataset, side, *, points_per_half, outer_reps, params, over
     if params["max_synapses"] is not None and params["max_synapses"] < required:
         raise ValueError(f"--max-synapses must be at least {required} for these validation half sizes")
     flat = gather(clouds, eligible, params["use_weights"], params["max_synapses"], params["seed"])
-    options = {"version": split_cluster.VERSION, "dataset": dataset, "side": side,
+    options = {"version": split_cluster.VERSION, "estimator_version": clustering.VERSION,
+               "dataset": dataset, "side": side,
                "source": file_fingerprint(clouds.path), "cell_ids": clouds.cell_ids[eligible].tolist(),
                "full_params": params, "points_per_half": sizes, "outer_reps": int(outer_reps),
                "inner_reps": params["n_reps"], "seed": params["seed"],
@@ -185,6 +189,10 @@ def compare_validation_to_full(outdir, dataset, side):
         comparison["k_full"] = full["chosen_k"]
         if full.get("source_sha256") is None:
             comparison["status"] = "full_fit_provenance_unknown"
+        elif full.get("estimator_version", 1) != options.get("estimator_version", 1):
+            comparison.update(status="estimator_mismatch",
+                              note="Historical validation uses a different k-selection/PAC rule; "
+                                   "its held-out results do not validate the revised full fit.")
         elif (full["source_sha256"] != options["source"]["sha256"]
               or full.get("cell_ids") != options["cell_ids"]
               or any(full["run"].get(key) != value for key, value in options["full_params"].items())):
@@ -359,7 +367,19 @@ def cluster_neurons(dataset, side, *, linkage, k_values, min_cluster_size,
     table.to_csv(outdir / "neurons.csv", index=False)
     np.save(outdir / "distance.npy", distance.astype(np.float32))
 
+    sizes_by_k = {str(kk): {("outliers" if c == 0 else str(c)): int(n)
+                           for c, n in zip(*np.unique(consensus[kk], return_counts=True))}
+                  for kk in reached}
+    pd.DataFrame([{"k": kk, "selected": kk == chosen_k, "reachable": kk in reached,
+                   "n_outliers": fit["n_outliers"][kk],
+                   "coverage": float(np.mean(consensus[kk] > 0)),
+                   "stability_ari_median": clustering.stability_summary(stab[kk])["median"],
+                   "pac": ambiguity[kk], "pac_all_pairs": fit["pac_all_pairs"][kk],
+                   "cell_type_ami": agreement["cell_type"][kk]["ami"]}
+                  for kk in k_values]).to_csv(outdir / "k_summary.csv", index=False)
+
     summary = {
+        "estimator_version": clustering.VERSION,
         "run": {"dataset": dataset, "side": side, "linkage": linkage,
                 **(run_info or {})},
         "n_neurons": int(eligible.size),
@@ -370,12 +390,16 @@ def cluster_neurons(dataset, side, *, linkage, k_values, min_cluster_size,
         "noise": noise,
         "chosen_k": chosen_k,
         "k_selection": k_selection,
-        "cluster_sizes": {("outliers" if c == 0 else str(c)): int(n)
-                          for c, n in zip(*np.unique(labels, return_counts=True))},
+        "cluster_sizes": sizes_by_k[str(chosen_k)],
+        "cluster_sizes_by_k": sizes_by_k,
         "k_reached": reached,
         "n_outliers": {str(kk): int(np.sum(consensus[kk] == 0)) for kk in reached},
         "stability_ari": {str(kk): clustering.stability_summary(stab[kk]) for kk in reached},
         "pac": {str(kk): ambiguity[kk] for kk in reached},
+        "pac_all_pairs": {str(kk): fit["pac_all_pairs"][kk] for kk in reached},
+        "metric_scope": {"pac": "consensus non-outlier pairs; coverage varies with k",
+                         "pac_all_pairs": "all neuron pairs; diagnostic only, not used to select k",
+                         "stability_ari": "consensus non-outlier neurons; replicate label 0 retained as one group"},
         "label_agreement": {column: {str(kk): per_k[kk] for kk in reached}
                             for column, per_k in agreement.items()},
         "distance_vs_covariate_spearman": clustering.covariate_distance_correlation(distance, table),
@@ -384,15 +408,21 @@ def cluster_neurons(dataset, side, *, linkage, k_values, min_cluster_size,
     with open(outdir / "summary.json", "w") as handle:
         json.dump(summary, handle, indent=2)
 
-    title = f"{dataset} {side} | {linkage} | min cluster {min_cluster_size}"
+    matrix_name = "Replicate-mean" if exact is None else "Exact"
+    title = (f"{dataset} {side} | {linkage} | min cluster {min_cluster_size}\n"
+             f"{matrix_name} W2 tree; barcode shows bootstrap consensus labels")
     plotting.plot_tree_heatmap(tree, distance, table, labels, chosen_k,
                                outdir / "tree_heatmap.png", title)
-    plotting.plot_k_curves(stab, ambiguity, agreement, chosen_k, outdir / "k_curves.png")
+    plotting.plot_k_curves(stab, ambiguity, agreement, chosen_k, outdir / "k_curves.png",
+                           n_outliers=fit["n_outliers"], pac_all_pairs=fit["pac_all_pairs"])
     plotting.plot_co_clustering(together, labels, clustering.leaf_order(tree), chosen_k,
                                 outdir / "co_clustering.png")
     plotting.plot_noise(nearest, self_mean, outdir / "noise_floor.png")
     plotting.plot_contingency(table, labels, outdir / "contingency.png")
     plotting.plot_covariates(table, labels, outdir / "covariates.png")
+    # Keep historical validation numbers, but invalidate an obsolete full-fit link.
+    if (validation_dir(dataset, side) / "summary.json").exists():
+        compare_validation_to_full(validation_dir(dataset, side), dataset, side)
 
     print(json.dumps({key: summary[key] for key in
                       ("n_neurons", "noise", "chosen_k", "cluster_sizes",

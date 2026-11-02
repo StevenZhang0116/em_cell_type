@@ -78,6 +78,14 @@ If A or B cannot reach k, record the failure; a smaller achieved partition does
 not count as a successful fit at k. No B-driven fallback or parameter tuning is
 performed. If A fails, B's fit is skipped and its fit status says so.
 
+The automatic-selection range is exactly `--k-min` through `--k-max`, defaulting
+to a lower bound of 2. PAC uses consensus non-outlier pairs; each half's record
+also stores all-pair PAC and per-k outlier counts. Internal bootstrap ARI retains
+replicate label 0 on the consensus-inlier cohort. These internal statistics are
+distinct from the joint-inlier A/B ARI below. Comparing A's k=2 and k=3 internal
+stability does not constitute a held-out comparison of those two choices: B was
+only fitted at A's selected k.
+
 The exact, non-bootstrapped B matrix is also retained. Let `a_i`, `b_i` be the
 two consensus labels and `S = {i: a_i > 0 and b_i > 0}`. Report:
 
@@ -120,6 +128,15 @@ and the ordered cell IDs. A later call that changes any of these recomputes ever
 split (the old split files are removed first); more half sizes or more outer splits
 extend the run instead, reusing the splits already saved. CPU count does not change
 the result.
+
+The consensus estimator version is also part of cache identity. Version 2 removes
+the historical hidden k>=3 restriction and restricts PAC to consensus-inlier pairs.
+Old validation cannot be updated to this estimator from its stored summaries:
+the inner bootstrap distance matrices were not retained. A Stage-C-only refresh
+therefore keeps the historical validation and marks its full-fit comparison
+`estimator_mismatch`; explicitly running `validate` recomputes the splits under
+the revised estimator. A stable full fit at k=2 does not inherit the old k=3
+held-out ARI.
 
 | File | Contents |
 |---|---|
